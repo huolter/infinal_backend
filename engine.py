@@ -180,29 +180,31 @@ class GameState:
                     'data': {'time_of_day': self.time_of_day}
                 })
                 await asyncio.sleep(0.1)
-            except WebSocketDisconnect:
-                print("WebSocket disconnected in update_time, continuing...")
-                continue
             except Exception as e:
                 print(f"Error in update_time: {e}")
-                await asyncio.sleep(1)  # Prevent tight loop on failure
+                await asyncio.sleep(1)  # Back off on error
 
 class ConnectionManager:
     def __init__(self):
         self.active_connections: List[WebSocket] = []
         self.game_state = GameState()
         asyncio.create_task(self.game_state.update_time(self))
+        asyncio.create_task(self.keepalive())  # Start keepalive task
 
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
         self.active_connections.append(websocket)
         player_id = str(len(self.active_connections))
-        data = await websocket.receive_text()
-        message = json.loads(data)
-        if message['type'] == 'set_name':
-            name = message['data']['name']
-        else:
+        try:
+            data = await websocket.receive_text()
+            message = json.loads(data)
+            if message['type'] == 'set_name':
+                name = message['data']['name']
+            else:
+                name = f"Player_{player_id}"
+        except WebSocketDisconnect:
             name = f"Player_{player_id}"
+            print(f"Client disconnected before sending name, assigned: {name}")
         self.game_state.add_player(player_id, name)
         chunks = self.game_state.get_nearby_chunks(player_id)
         
@@ -212,28 +214,32 @@ class ConnectionManager:
             player_data_copy['active_chunks'] = list(player_data_copy['active_chunks'])
             players_data[pid] = player_data_copy
 
-        await websocket.send_text(json.dumps({
-            'type': 'init',
-            'data': {
-                'player_id': player_id,
-                'chunks': chunks,
-                'players': players_data,
-                'time_of_day': self.game_state.time_of_day
-            }
-        }))
-        await self.broadcast({
-            'type': 'player_joined',
-            'data': {
-                'player_id': player_id,
-                'position': self.game_state.players[player_id]['position'],
-                'rotation': self.game_state.players[player_id]['rotation'],
-                'name': self.game_state.players[player_id]['name']
-            }
-        }, exclude=websocket)
+        try:
+            await websocket.send_text(json.dumps({
+                'type': 'init',
+                'data': {
+                    'player_id': player_id,
+                    'chunks': chunks,
+                    'players': players_data,
+                    'time_of_day': self.game_state.time_of_day
+                }
+            }))
+            await self.broadcast({
+                'type': 'player_joined',
+                'data': {
+                    'player_id': player_id,
+                    'position': self.game_state.players[player_id]['position'],
+                    'rotation': self.game_state.players[player_id]['rotation'],
+                    'name': self.game_state.players[player_id]['name']
+                }
+            }, exclude=websocket)
+        except WebSocketDisconnect:
+            print(f"Client {player_id} disconnected during init")
+            await self.disconnect(websocket, player_id)
 
     async def disconnect(self, websocket: WebSocket, player_id: str):
         if websocket in self.active_connections:
-            self.active_connections.remove(websocket)  # Remove before broadcasting
+            self.active_connections.remove(websocket)
         self.game_state.remove_player(player_id)
         try:
             await self.broadcast({
@@ -246,17 +252,16 @@ class ConnectionManager:
     async def broadcast(self, message: Dict, exclude: WebSocket = None):
         message_str = json.dumps(message)
         disconnected = []
-        for connection in self.active_connections:
+        for connection in self.active_connections[:]:  # Copy to avoid modifying during iteration
             if connection != exclude:
                 try:
                     await connection.send_text(message_str)
-                except (WebSocketDisconnect, RuntimeError) as e:
-                    print(f"Failed to send to a connection: {e}")
+                except (WebSocketDisconnect, RuntimeError):
                     disconnected.append(connection)
-        # Clean up disconnected clients
         for conn in disconnected:
             if conn in self.active_connections:
                 self.active_connections.remove(conn)
+                print("Removed disconnected client from active_connections")
 
     async def update_player(self, websocket: WebSocket, player_id: str, data: Dict):
         position = data.get('position')
@@ -264,21 +269,33 @@ class ConnectionManager:
         self.game_state.update_player_position(player_id, position, rotation)
         current_chunks = self.game_state.get_nearby_chunks(player_id)
 
-        await websocket.send_text(json.dumps({
-            'type': 'chunks_update',
-            'data': {'chunks': current_chunks}
-        }))
+        try:
+            await websocket.send_text(json.dumps({
+                'type': 'chunks_update',
+                'data': {'chunks': current_chunks}
+            }))
+            print(f"Broadcasting position update for {player_id}: {position}")
+            await self.broadcast({
+                'type': 'position',
+                'data': {
+                    'player_id': player_id,
+                    'position': position,
+                    'rotation': rotation,
+                    'name': self.game_state.players[player_id]['name']
+                }
+            }, exclude=websocket)
+        except WebSocketDisconnect:
+            print(f"Client {player_id} disconnected during update_player")
+            await self.disconnect(websocket, player_id)
 
-        print(f"Broadcasting position update for {player_id}: {position}")
-        await self.broadcast({
-            'type': 'position',
-            'data': {
-                'player_id': player_id,
-                'position': position,
-                'rotation': rotation,
-                'name': self.game_state.players[player_id]['name']
-            }
-        }, exclude=websocket)
+    async def keepalive(self):
+        while True:
+            await asyncio.sleep(30)  # Send keepalive every 30 seconds
+            try:
+                await self.broadcast({'type': 'ping'})
+                print("Sent keepalive ping")
+            except Exception as e:
+                print(f"Error in keepalive: {e}")
 
 manager = ConnectionManager()
 
