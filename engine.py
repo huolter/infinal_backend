@@ -6,12 +6,14 @@ import asyncio
 import random
 import math
 import noise
+import os
+from starlette.websockets import WebSocketDisconnect
 
 app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://gualterio.com/infinal/"],
+    allow_origins=["https://gualterio.com"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -139,7 +141,7 @@ class GameState:
             'position': position,
             'rotation': 0,
             'active_chunks': set(),
-            'name': name  # Store player name
+            'name': name
         }
 
     def remove_player(self, player_id: str):
@@ -171,12 +173,19 @@ class GameState:
 
     async def update_time(self, manager):
         while True:
-            self.time_of_day = (self.time_of_day + 1 / (self.DAY_NIGHT_CYCLE * 10)) % 1
-            await manager.broadcast({
-                'type': 'time_update',
-                'data': {'time_of_day': self.time_of_day}
-            })
-            await asyncio.sleep(0.1)
+            try:
+                self.time_of_day = (self.time_of_day + 1 / (self.DAY_NIGHT_CYCLE * 10)) % 1
+                await manager.broadcast({
+                    'type': 'time_update',
+                    'data': {'time_of_day': self.time_of_day}
+                })
+                await asyncio.sleep(0.1)
+            except WebSocketDisconnect:
+                print("WebSocket disconnected in update_time, continuing...")
+                continue
+            except Exception as e:
+                print(f"Error in update_time: {e}")
+                await asyncio.sleep(1)  # Prevent tight loop on failure
 
 class ConnectionManager:
     def __init__(self):
@@ -188,13 +197,12 @@ class ConnectionManager:
         await websocket.accept()
         self.active_connections.append(websocket)
         player_id = str(len(self.active_connections))
-        # Wait for the client to send their name
         data = await websocket.receive_text()
         message = json.loads(data)
         if message['type'] == 'set_name':
             name = message['data']['name']
         else:
-            name = f"Player_{player_id}"  # Default name if none provided
+            name = f"Player_{player_id}"
         self.game_state.add_player(player_id, name)
         chunks = self.game_state.get_nearby_chunks(player_id)
         
@@ -224,18 +232,31 @@ class ConnectionManager:
         }, exclude=websocket)
 
     async def disconnect(self, websocket: WebSocket, player_id: str):
-        self.active_connections.remove(websocket)
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)  # Remove before broadcasting
         self.game_state.remove_player(player_id)
-        await self.broadcast({
-            'type': 'player_left',
-            'data': {'player_id': player_id}
-        })
+        try:
+            await self.broadcast({
+                'type': 'player_left',
+                'data': {'player_id': player_id}
+            })
+        except Exception as e:
+            print(f"Error broadcasting player_left: {e}")
 
     async def broadcast(self, message: Dict, exclude: WebSocket = None):
         message_str = json.dumps(message)
+        disconnected = []
         for connection in self.active_connections:
             if connection != exclude:
-                await connection.send_text(message_str)
+                try:
+                    await connection.send_text(message_str)
+                except (WebSocketDisconnect, RuntimeError) as e:
+                    print(f"Failed to send to a connection: {e}")
+                    disconnected.append(connection)
+        # Clean up disconnected clients
+        for conn in disconnected:
+            if conn in self.active_connections:
+                self.active_connections.remove(conn)
 
     async def update_player(self, websocket: WebSocket, player_id: str, data: Dict):
         position = data.get('position')
@@ -248,6 +269,7 @@ class ConnectionManager:
             'data': {'chunks': current_chunks}
         }))
 
+        print(f"Broadcasting position update for {player_id}: {position}")
         await self.broadcast({
             'type': 'position',
             'data': {
@@ -270,13 +292,14 @@ async def websocket_endpoint(websocket: WebSocket):
             message = json.loads(data)
             if message['type'] == 'position':
                 await manager.update_player(websocket, player_id, message['data'])
+    except WebSocketDisconnect:
+        print(f"WebSocket disconnected for player {player_id}")
+        await manager.disconnect(websocket, player_id)
     except Exception as e:
-        print(f"WebSocket error: {e}")
-    finally:
+        print(f"WebSocket error for player {player_id}: {e}")
         await manager.disconnect(websocket, player_id)
 
 if __name__ == "__main__":
     import uvicorn
-    import os
     port = int(os.getenv("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
