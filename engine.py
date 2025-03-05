@@ -195,7 +195,7 @@ class NPC:
             'z': random.uniform(-100, 100)
         }
         self.rotation = random.uniform(0, 2 * math.pi)
-        self.size = random.uniform(1, 5)
+        self.size = random.uniform(5, 15)
         self.scale_factor = 1.0
         self.speed = random.uniform(0.05, 0.5)
         self.direction = {
