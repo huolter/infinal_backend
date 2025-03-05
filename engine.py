@@ -45,37 +45,30 @@ class Entity:
     def __init__(self, entity_id, entity_type, position, properties=None):
         self.id = entity_id
         self.type = entity_type
-        self.position = position.copy()  # Use copy to avoid reference issues
+        self.position = position.copy()
         self.properties = properties or {}
         self.velocity = {'x': 0, 'y': 0, 'z': 0}
         self.rotation = 0
         self.created_at = time.time()
         self.last_update = self.created_at
         self.active = True
-
-        # Set a long travel path
-        self.path_length = random.uniform(500, 1000)  # How far the entity will travel
-        self.distance_traveled = 0  # Track how far it has gone
-
-        # Smoothing-related additions
-        self.target_position = position.copy()  # Target position for smooth movement
-        self.smoothing_factor = 0.5  # Adjusted to 0.5 for tighter smoothing
+        self.path_length = random.uniform(500, 1000)
+        self.distance_traveled = 0
+        self.target_position = position.copy()
+        self.smoothing_factor = 0.2  # Reduced to 0.2 for smoother, slower adjustment
 
     def update(self, dt):
         """Update entity position based on velocity, with smoothing."""
-        # Calculate target position
         self.target_position['x'] += self.velocity['x'] * dt
         self.target_position['y'] += self.velocity['y'] * dt
         self.target_position['z'] += self.velocity['z'] * dt
 
-        # Calculate distance moved this frame (based on target position)
         distance_this_frame = math.sqrt(
             (self.velocity['x'] * dt) ** 2 +
             (self.velocity['z'] * dt) ** 2
         )
         self.distance_traveled += distance_this_frame
 
-        # Smoothly interpolate towards the target position
         self.position['x'] += (self.target_position['x'] - self.position['x']) * self.smoothing_factor
         self.position['y'] += (self.target_position['y'] - self.position['y']) * self.smoothing_factor
         self.position['z'] += (self.target_position['z'] - self.position['z']) * self.smoothing_factor
@@ -150,6 +143,7 @@ class HorizonTraveler(Entity):
         start_z = world_center['z'] + math.sin(travel_angle) * horizon_distance
 
         self.position = {'x': start_x, 'y': 0, 'z': start_z}
+        self.target_position = self.position.copy()
 
         end_x = world_center['x'] - math.cos(travel_angle) * horizon_distance
         end_z = world_center['z'] - math.sin(travel_angle) * horizon_distance
@@ -167,11 +161,10 @@ class HorizonTraveler(Entity):
 
         self.rotation = math.atan2(dz, dx)
         self.path_length = distance
-        self.walk_cycle = 0
 
     def update(self, dt):
         """Update horizon traveler with smooth, consistent movement"""
-        super().update(dt)  # No additional y-position oscillation
+        super().update(dt)
 
 class GiantTraveler(HorizonTraveler):
     """Giant entity that slowly walks from horizon to horizon"""
@@ -225,6 +218,7 @@ class GiantTraveler(HorizonTraveler):
         }
 
         self.position['y'] = giant_size * 0.6
+        self.target_position['y'] = self.position['y']
         self.path_length *= 1.5
         self.last_footstep = time.time()
         self.footstep_interval = self.properties['stepInterval']
@@ -237,7 +231,7 @@ class GiantTraveler(HorizonTraveler):
             self.last_footstep = current_time
         else:
             self.properties['footstep'] = False
-        super().update(dt)  # No additional sway
+        super().update(dt)
 
 class SkyTraveler(Entity):
     """Entity that glides slowly across the sky"""
@@ -275,6 +269,7 @@ class SkyTraveler(Entity):
         start_z = world_center['z'] + math.sin(travel_angle) * horizon_distance
 
         self.position = {'x': start_x, 'y': properties['altitude'], 'z': start_z}
+        self.target_position = self.position.copy()
 
         end_x = world_center['x'] - math.cos(travel_angle) * horizon_distance
         end_z = world_center['z'] - math.sin(travel_angle) * horizon_distance
@@ -295,7 +290,7 @@ class SkyTraveler(Entity):
 
     def update(self, dt):
         """Update sky traveler with smooth drifting motion"""
-        super().update(dt)  # No vertical oscillation
+        super().update(dt)
 
 class ChunkGenerator:
     def __init__(self, entity_manager):
@@ -470,7 +465,6 @@ class ChunkGenerator:
         }
 
     def update_entity_counts(self, entity_counts):
-        """Update the counts of active special entities"""
         self.horizon_travelers_active = entity_counts.get('horizon', 0)
         self.sky_travelers_active = entity_counts.get('sky', 0)
         self.giants_active = entity_counts.get('giant', 0)
@@ -497,14 +491,12 @@ class ChunkGenerator:
             self.next_giant_spawn = current_time + random.uniform(30, 60)
 
 class EntityManager:
-    """Manages all dynamic entities in the game"""
     def __init__(self):
         self.entities = {}
         self.entity_counter = 0
         self.last_update = time.time()
 
     def create_horizon_traveler(self, world_center):
-        """Create a new horizon traveler entity"""
         self.entity_counter += 1
         entity_id = f"entity_{self.entity_counter}"
         entity = HorizonTraveler(entity_id, {'x': 0, 'y': 0, 'z': 0}, world_center)
@@ -532,7 +524,6 @@ class EntityManager:
         return entity
 
     def create_sky_traveler(self, world_center):
-        """Create a new sky traveler entity"""
         self.entity_counter += 1
         entity_id = f"entity_{self.entity_counter}"
         entity = SkyTraveler(entity_id, {'x': 0, 'y': 0, 'z': 0}, world_center)
@@ -541,7 +532,6 @@ class EntityManager:
         return entity
 
     def create_giant_traveler(self, world_center):
-        """Create a new giant traveler entity"""
         self.entity_counter += 1
         entity_id = f"entity_{self.entity_counter}"
         entity = GiantTraveler(entity_id, {'x': 0, 'y': 0, 'z': 0}, world_center)
@@ -550,7 +540,6 @@ class EntityManager:
         return entity
 
     def update(self, dt, chunk_generator=None):
-        """Update all entities"""
         entity_counts = {'horizon': 0, 'sky': 0, 'giant': 0}
         entities_to_remove = []
 
@@ -588,7 +577,6 @@ class EntityManager:
             chunk_generator.update_entity_counts(entity_counts)
 
     def get_entities_in_range(self, position, radius):
-        """Get all entities within a certain radius of a position"""
         entities_in_range = []
         for entity in self.entities.values():
             dx = entity.position['x'] - position['x']
@@ -599,7 +587,6 @@ class EntityManager:
         return entities_in_range
 
     def get_stats(self):
-        """Get statistics about entities"""
         entity_types = {}
         for entity in self.entities.values():
             entity_types[entity.type] = entity_types.get(entity.type, 0) + 1
@@ -687,7 +674,6 @@ class GameState:
         return chunks
 
     def get_nearby_entities(self, player_id: str) -> List[Dict]:
-        """Get all dynamic entities near a player"""
         if player_id not in self.players:
             return []
         pos = self.players[player_id]['position']
@@ -695,12 +681,10 @@ class GameState:
         return self.entity_manager.get_entities_in_range(pos, radius)
 
     def update_entities(self):
-        """Update all dynamic entities"""
-        current_time = time.time()
-        if current_time - self.last_entity_update >= 0.05:  # Adjusted to 0.05 for 20 Hz
-            dt = current_time - self.last_entity_update
-            self.entity_manager.update(dt, self.chunk_generator)
-            self.last_entity_update = current_time
+        """Update all dynamic entities with fixed dt"""
+        dt = 0.1  # Fixed dt matching the 10 Hz update rate
+        self.entity_manager.update(dt, self.chunk_generator)
+        self.last_entity_update = time.time()
 
     def get_stats(self) -> Dict:
         return {
@@ -714,7 +698,6 @@ class GameState:
         }
 
 class ClientConnection:
-    """Manages a single client connection"""
     def __init__(self, websocket: WebSocket, manager):
         self.websocket = websocket
         self.manager = manager
@@ -729,7 +712,6 @@ class ClientConnection:
         self.message_time = time.time()
 
     async def authenticate(self, timeout=5.0):
-        """Try to get player name from authentication message"""
         try:
             data = await asyncio.wait_for(self.websocket.receive_text(), timeout=timeout)
             message = json.loads(data)
@@ -745,7 +727,6 @@ class ClientConnection:
         return False
 
     async def send_message(self, message: Dict):
-        """Send a message to this client with error handling"""
         if not self.active:
             return False
         try:
@@ -763,7 +744,6 @@ class ClientConnection:
             return False
 
     def check_rate_limit(self) -> bool:
-        """Check if client is sending too many messages"""
         current_time = time.time()
         if current_time - self.message_time > 1.0:
             self.message_count = 1
@@ -792,7 +772,6 @@ class ConnectionManager:
         task.add_done_callback(self.background_tasks.discard)
 
     async def connect(self, websocket: WebSocket) -> ClientConnection:
-        """Handle a new client connection"""
         await websocket.accept()
         client = ClientConnection(websocket, self)
         self.connections[client.player_id] = client
@@ -838,7 +817,6 @@ class ConnectionManager:
         return client
 
     async def disconnect(self, client: ClientConnection):
-        """Handle client disconnection"""
         if client.player_id in self.connections:
             del self.connections[client.player_id]
         self.game_state.remove_player(client.player_id)
@@ -849,7 +827,6 @@ class ConnectionManager:
         print(f"Disconnected: {client.player_id} ({client.name})")
 
     async def broadcast(self, message: Dict, exclude: Optional[str] = None):
-        """Broadcast a message to all active clients except excluded one"""
         message_str = json.dumps(message)
         large_message = len(message_str) > 1024
         compressed = zlib.compress(message_str.encode(), 6) if large_message else None
@@ -870,7 +847,6 @@ class ConnectionManager:
                         client.active = False
 
     async def update_player(self, client: ClientConnection, data: Dict):
-        """Update player position and send nearby chunks"""
         position = data.get('position')
         rotation = data.get('rotation', 0)
         self.game_state.update_player_position(client.player_id, position, rotation)
@@ -914,7 +890,6 @@ class ConnectionManager:
         }, exclude=client.player_id)
 
     async def handle_client(self, websocket: WebSocket):
-        """Main handler for client connection"""
         client = await self.connect(websocket)
         try:
             while client.active:
@@ -966,7 +941,6 @@ class ConnectionManager:
             await self.disconnect(client)
 
     def handle_entity_interaction(self, client, entity_id, action):
-        """Handle player interaction with an entity"""
         entity = self.game_state.entity_manager.entities.get(entity_id)
         if not entity:
             return
@@ -979,14 +953,12 @@ class ConnectionManager:
             asyncio.create_task(self.reset_giant_wave(entity_id))
 
     async def reset_giant_wave(self, entity_id):
-        """Reset the giant's waving flag after a delay"""
         await asyncio.sleep(3)
         entity = self.game_state.entity_manager.entities.get(entity_id)
         if entity and isinstance(entity, GiantTraveler):
             entity.properties['waving'] = False
 
     async def update_time_task(self):
-        """Background task to update time of day"""
         while True:
             try:
                 self.game_state.time_of_day = (self.game_state.time_of_day + 1 / (self.game_state.DAY_NIGHT_CYCLE * 10)) % 1
@@ -1001,7 +973,6 @@ class ConnectionManager:
                 await asyncio.sleep(1)
 
     async def cleanup_inactive_players_task(self):
-        """Background task to remove inactive players"""
         while True:
             try:
                 current_time = time.time()
@@ -1018,7 +989,6 @@ class ConnectionManager:
                 await asyncio.sleep(30)
 
     async def keepalive_task(self):
-        """Background task to send keepalive pings"""
         while True:
             try:
                 current_time = time.time()
@@ -1038,20 +1008,18 @@ class ConnectionManager:
                 await asyncio.sleep(15)
 
     async def update_entities_task(self):
-        """Background task to update all entities"""
         while True:
             try:
                 self.game_state.update_entities()
-                await asyncio.sleep(0.05)  # Adjusted to 0.05 for 20 Hz
+                await asyncio.sleep(0.1)  # Reverted to 10 Hz
             except Exception as e:
                 print(f"Error in update_entities_task: {e}")
                 await asyncio.sleep(1)
 
     async def broadcast_entities_task(self):
-        """Background task to broadcast entity updates to clients"""
         while True:
             try:
-                await asyncio.sleep(0.05)  # Adjusted to 0.05 for 20 Hz
+                await asyncio.sleep(0.1)  # Reverted to 10 Hz
                 for player_id, client in list(self.connections.items()):
                     if not client.active:
                         continue
@@ -1072,12 +1040,10 @@ manager = ConnectionManager()
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    """Main WebSocket endpoint - handles each client connection"""
     await manager.handle_client(websocket)
 
 @app.get("/server-stats")
 async def get_server_stats():
-    """Endpoint to get server statistics"""
     return manager.game_state.get_stats()
 
 if __name__ == "__main__":
