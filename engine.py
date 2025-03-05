@@ -545,7 +545,7 @@ class ConnectionManager:
 
         current_chunks = self.game_state.get_nearby_chunks(client.player_id)
         new_chunks = {k: v for k, v in current_chunks.items() if k not in client.sent_chunks}
-        client shapes.update(new_chunks.keys())
+        client.sent_chunks.update(new_chunks.keys())
 
         if new_chunks:
             chunk_keys = list(new_chunks.keys())
