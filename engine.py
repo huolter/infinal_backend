@@ -41,8 +41,8 @@ class LRUCache(OrderedDict):
 
 class ChunkGenerator:
     def __init__(self):
-        self.chunks = LRUCache(maxsize=2000)
-        self.DENSITY = 0.3
+        self.chunks = LRUCache(maxsize=3000)
+        self.DENSITY = 0.4
         self.seed = random.randint(0, 1000000)
         self.biome_scale = 100.0
         self.terrain_scale = 50.0
@@ -195,9 +195,9 @@ class NPC:
             'z': random.uniform(-100, 100)
         }
         self.rotation = random.uniform(0, 2 * math.pi)
-        self.size = random.uniform(5, 15)
+        self.size = random.uniform(5, 25 )
         self.scale_factor = 1.0
-        self.speed = random.uniform(0.05, 0.5)
+        self.speed = random.uniform(0.15, 2)
         self.direction = {
             'x': math.cos(self.rotation) * self.speed,
             'z': math.sin(self.rotation) * self.speed
@@ -247,7 +247,7 @@ class GameState:
         self.chunk_generator = ChunkGenerator()
         self.VIEW_DISTANCE = 3
         self.time_of_day = 0
-        self.DAY_NIGHT_CYCLE = 240
+        self.DAY_NIGHT_CYCLE = 180
         self.last_activity = {}
         self.connections_total = 0
         self.connections_active = 0
