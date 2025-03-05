@@ -254,7 +254,7 @@ class AbstractEntity(Entity):
             'transparency': random.uniform(0.2, 0.9),
             'soundEmission': random.choice([True, False]),
             'soundFrequency': random.uniform(50, 2000) if random.random() > 0.5 else None,
-            'teleportation': random.random() > 0.8,  # 20% chance to teleport
+            'teleportation': random.random() > 0.9,  # 20% chance to teleport
             'warpReality': random.random() > 0.9,    # 10% chance to warp reality
             'tentacleCount': random.randint(0, 12),
             'tentacleLength': random.uniform(0, 5)
