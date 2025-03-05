@@ -136,7 +136,7 @@ class ChunkGenerator:
                 return {'type': 'snow_patch', 'size': size}
         return 0
 
-    def generate_static_entities(self, chunk_x: int, chunk_z: int, biome: str) -> List[Dict]:
+    def generate_static_entities(self, chunk_x: int, chunk_z: int, biome: str) -> list[dict]:
         entities = []
         if random.random() > 0.7:
             num_entities = random.randint(0, 2)
