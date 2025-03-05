@@ -272,9 +272,11 @@ class GameState:
 
     def update_player_position(self, player_id: str, position: Dict, rotation: float):
         if player_id in self.players:
+            # Clamp y to be >= 0
+            clamped_y = max(position['y'], 0)
             self.players[player_id]['position'] = {
                 'x': position['x'],
-                'y': position['y'],
+                'y': clamped_y,
                 'z': position['z']
             }
             self.players[player_id]['rotation'] = rotation
