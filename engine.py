@@ -314,6 +314,7 @@ class ConnectionManager:
         self.active_connections: Dict[str, WebSocket] = {}  # player_id -> websocket
         self.player_ids: Dict[WebSocket, str] = {}  # websocket -> player_id
         self.last_message_time: Dict[str, float] = {}  # player_id -> timestamp
+        self.disconnected_websockets = set()  # To track disconnected websockets
         self.game_state = GameState()
         
         # Start background tasks
@@ -337,10 +338,12 @@ class ConnectionManager:
         self.player_ids[websocket] = player_id
         self.last_message_time[player_id] = time.time()
         
+        print(f"WebSocket connected: {player_id}")
+        
         # Wait for player name with timeout
         try:
             name = await self.get_player_name(websocket)
-        except (WebSocketDisconnect, asyncio.TimeoutError, json.JSONDecodeError) as e:
+        except Exception as e:
             name = f"Player_{player_id[:8]}"
             print(f"Client connection issue: {e}, assigned name: {name}")
         
@@ -384,10 +387,10 @@ class ConnectionManager:
                 }
             }, exclude_player=player_id)
             
-            print(f"Player {player_id} ({name}) connected")
+            print(f"Player {player_id} ({name}) connected and initialized")
             
-        except WebSocketDisconnect:
-            print(f"Client {player_id} disconnected during init")
+        except Exception as e:
+            print(f"Client {player_id} error during init: {e}")
             await self.disconnect(websocket)
 
     async def get_player_name(self, websocket: WebSocket) -> str:
@@ -405,6 +408,9 @@ class ConnectionManager:
 
     async def disconnect(self, websocket: WebSocket):
         """Handle client disconnection"""
+        # Mark as disconnected to prevent further operations
+        self.disconnected_websockets.add(websocket)
+        
         if websocket in self.player_ids:
             player_id = self.player_ids[websocket]
             
@@ -432,6 +438,10 @@ class ConnectionManager:
 
     async def send_to_client(self, websocket: WebSocket, message: Dict):
         """Send a message to a specific client with compression"""
+        # Skip if the websocket is already disconnected
+        if websocket in self.disconnected_websockets:
+            return
+            
         try:
             # Compress message if it's large
             message_str = json.dumps(message)
@@ -446,6 +456,10 @@ class ConnectionManager:
             
         except Exception as e:
             print(f"Error sending to client: {e}")
+            # Mark as disconnected
+            self.disconnected_websockets.add(websocket)
+            if websocket in self.player_ids:
+                await self.disconnect(websocket)
             # Let the caller handle any disconnect exceptions
             raise
 
@@ -458,10 +472,13 @@ class ConnectionManager:
             # Pre-compress large messages once
             compressed = zlib.compress(message_str.encode(), self.compression_level)
         
+        # Make a copy to avoid issues with concurrent modifications
+        connections_to_process = list(self.active_connections.items())
+        
         # Send to each client in parallel
         tasks = []
-        for player_id, websocket in self.active_connections.items():
-            if player_id != exclude_player:
+        for player_id, websocket in connections_to_process:
+            if player_id != exclude_player and websocket not in self.disconnected_websockets:
                 if large_message:
                     tasks.append(self.send_bytes_to_client(websocket, compressed))
                 else:
@@ -474,40 +491,45 @@ class ConnectionManager:
             # Count successful messages
             success_count = sum(1 for r in results if not isinstance(r, Exception))
             self.game_state.messages_sent += success_count
-            
-            # Handle disconnected clients
-            for i, result in enumerate(results):
-                if isinstance(result, (WebSocketDisconnect, ConnectionRefusedError)):
-                    # The websocket is already gone, find which one it was
-                    for ws in list(self.player_ids.keys()):
-                        try:
-                            await ws.receive_text()
-                        except:
-                            await self.disconnect(ws)
-                            break
 
     async def send_text_to_client(self, websocket: WebSocket, message_str: str):
         """Helper to send text message with error handling"""
+        # Skip if already disconnected
+        if websocket in self.disconnected_websockets:
+            return False
+            
         try:
             await websocket.send_text(message_str)
             return True
         except Exception as e:
+            # Mark as disconnected
+            self.disconnected_websockets.add(websocket)
             if websocket in self.player_ids:
                 await self.disconnect(websocket)
             return e
 
     async def send_bytes_to_client(self, websocket: WebSocket, compressed_bytes: bytes):
         """Helper to send binary message with error handling"""
+        # Skip if already disconnected
+        if websocket in self.disconnected_websockets:
+            return False
+            
         try:
             await websocket.send_bytes(compressed_bytes)
             return True
         except Exception as e:
+            # Mark as disconnected
+            self.disconnected_websockets.add(websocket)
             if websocket in self.player_ids:
                 await self.disconnect(websocket)
             return e
 
     async def update_player(self, websocket: WebSocket, player_id: str, data: Dict):
         """Update player position and send nearby chunks"""
+        # Skip if the websocket is disconnected
+        if websocket in self.disconnected_websockets:
+            return
+            
         # Update player state
         position = data.get('position')
         rotation = data.get('rotation', 0)
@@ -518,28 +540,40 @@ class ConnectionManager:
         
         # Only send new chunks that weren't previously active
         new_chunks = {}
-        for key, chunk in current_chunks.items():
-            if key not in self.game_state.players[player_id].get('sent_chunks', set()):
-                new_chunks[key] = chunk
-        
-        # Update sent chunks tracking
-        if not hasattr(self.game_state.players[player_id], 'sent_chunks'):
-            self.game_state.players[player_id]['sent_chunks'] = set()
-        self.game_state.players[player_id]['sent_chunks'].update(new_chunks.keys())
+        if player_id in self.game_state.players:
+            player = self.game_state.players[player_id]
+            sent_chunks = player.get('sent_chunks', set())
+            
+            for key, chunk in current_chunks.items():
+                if key not in sent_chunks:
+                    new_chunks[key] = chunk
+            
+            # Update sent chunks tracking
+            if 'sent_chunks' not in player:
+                player['sent_chunks'] = set()
+            player['sent_chunks'].update(new_chunks.keys())
         
         # Send chunks in small batches if there are many
         try:
             if new_chunks:
                 chunk_keys = list(new_chunks.keys())
-                for i in range(0, len(chunk_keys), 5):  # Send 5 chunks at a time
-                    batch = {k: new_chunks[k] for k in chunk_keys[i:i+5] if k in new_chunks}
+                for i in range(0, len(chunk_keys), 3):  # Send 3 chunks at a time
+                    # Skip if disconnected during sending
+                    if websocket in self.disconnected_websockets:
+                        break
+                        
+                    batch = {k: new_chunks[k] for k in chunk_keys[i:i+3] if k in new_chunks}
                     await self.send_to_client(websocket, {
                         'type': 'chunks_update',
                         'data': {'chunks': batch}
                     })
-                    if i + 5 < len(chunk_keys):
+                    if i + 3 < len(chunk_keys):
                         await asyncio.sleep(0.05)  # Small delay between batches
             
+            # Skip broadcasting if disconnected
+            if websocket in self.disconnected_websockets:
+                return
+                
             # Broadcast position update to other players
             await self.broadcast({
                 'type': 'position',
@@ -551,8 +585,8 @@ class ConnectionManager:
                 }
             }, exclude_player=player_id)
             
-        except WebSocketDisconnect:
-            print(f"Client {player_id} disconnected during update_player")
+        except Exception as e:
+            print(f"Error in update_player for {player_id}: {e}")
             await self.disconnect(websocket)
 
     async def keepalive(self):
@@ -562,18 +596,26 @@ class ConnectionManager:
             try:
                 current_time = time.time()
                 
+                # Make a copy to avoid concurrent modification issues
+                connections_to_check = list(self.active_connections.items())
+                
                 # Only ping clients that haven't sent a message recently
-                for player_id, last_time in self.last_message_time.items():
-                    if current_time - last_time > 10 and player_id in self.active_connections:
+                for player_id, websocket in connections_to_check:
+                    # Skip if already disconnected
+                    if websocket in self.disconnected_websockets:
+                        continue
+                        
+                    last_time = self.last_message_time.get(player_id, 0)
+                    if current_time - last_time > 10:
                         try:
                             # Send a ping to keep the connection alive
-                            await self.send_to_client(self.active_connections[player_id], {
+                            await self.send_to_client(websocket, {
                                 'type': 'ping',
                                 'data': {'server_time': current_time}
                             })
                         except Exception as e:
                             print(f"Error in keepalive for player {player_id}: {e}")
-                            # The disconnect will be handled by the send_to_client exception
+                            # Disconnect will be handled by send_to_client
             except Exception as e:
                 print(f"Error in keepalive: {e}")
                 
@@ -609,68 +651,71 @@ manager = ConnectionManager()
 async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
     
-    try:
-        while True:
+    # Process messages in a loop
+    while websocket not in manager.disconnected_websockets:
+        try:
             # Wait for a message from the client
-            try:
-                data = await websocket.receive()
+            data = await websocket.receive()
+            
+            # Get player ID from the connection
+            if websocket not in manager.player_ids:
+                print("Received message from unregistered websocket")
+                continue
                 
-                # Handle both text and binary messages
+            player_id = manager.player_ids[websocket]
+            
+            # Update last message time
+            if player_id in manager.last_message_time:
+                manager.last_message_time[player_id] = time.time()
+                manager.game_state.messages_received += 1
+            
+            # Handle both text and binary messages
+            message_data = None
+            try:
                 if "text" in data:
                     message_data = json.loads(data["text"])
                 elif "bytes" in data:
                     # Decompress binary messages
                     decompressed = zlib.decompress(data["bytes"])
                     message_data = json.loads(decompressed.decode())
-                else:
-                    continue
-                
-                # Get player ID from the connection
-                if websocket not in manager.player_ids:
-                    print("Received message from unregistered websocket")
-                    continue
-                    
-                player_id = manager.player_ids[websocket]
-                
-                # Update last message time
-                manager.last_message_time[player_id] = time.time()
-                manager.game_state.messages_received += 1
-                
-                # Check rate limiting
-                if not manager.check_rate_limit(player_id):
-                    # Send warning message
-                    await manager.send_to_client(websocket, {
-                        'type': 'warning',
-                        'data': {'message': 'Rate limit exceeded. Please slow down requests.'}
-                    })
-                    continue
-                
-                # Process messages based on type
-                if message_data['type'] == 'position':
-                    await manager.update_player(websocket, player_id, message_data['data'])
-                elif message_data['type'] == 'ping':
-                    # Respond to client pings
-                    await manager.send_to_client(websocket, {
-                        'type': 'pong',
-                        'data': {'server_time': time.time()}
-                    })
-                
-            except WebSocketDisconnect:
-                print(f"WebSocket disconnected for player {manager.player_ids.get(websocket, 'unknown')}")
-                await manager.disconnect(websocket)
-                break
-                
             except json.JSONDecodeError:
                 print("Error decoding JSON message")
                 continue
                 
-            except Exception as e:
-                print(f"Error processing message: {e}")
+            if not message_data:
                 continue
                 
-    except Exception as e:
-        print(f"Websocket error: {e}")
-        await manager.disconnect(websocket)
+            # Check rate limiting
+            if not manager.check_rate_limit(player_id):
+                # Send warning message
+                await manager.send_to_client(websocket, {
+                    'type': 'warning',
+                    'data': {'message': 'Rate limit exceeded. Please slow down requests.'}
+                })
+                continue
+            
+            # Process messages based on type
+            if message_data['type'] == 'position':
+                await manager.update_player(websocket, player_id, message_data['data'])
+            elif message_data['type'] == 'ping':
+                # Respond to client pings
+                await manager.send_to_client(websocket, {
+                    'type': 'pong',
+                    'data': {'server_time': time.time()}
+                })
+                
+        except WebSocketDisconnect:
+            print(f"WebSocket disconnect detected for player {manager.player_ids.get(websocket, 'unknown')}")
+            break
+                
+        except Exception as e:
+            print(f"Error processing message: {str(e)}")
+            # Continue the loop unless it's a fatal error
+            if str(e) == "Cannot call 'receive' once a disconnect message has been received.":
+                break
+    
+    # Clean up on disconnect
+    await manager.disconnect(websocket)
 
 @app.get("/server-stats")
 async def get_server_stats():
