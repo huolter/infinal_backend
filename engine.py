@@ -388,7 +388,7 @@ class SkyTraveler(Entity):
 class ChunkGenerator:
     def __init__(self, entity_manager):
         self.chunks = LRUCache(maxsize=2000)  # Store up to 2000 chunks in memory
-        self.DENSITY = 0.1
+        self.DENSITY = 0.3
         self.seed = random.randint(0, 1000000)
         self.biome_scale = 100.0
         self.terrain_scale = 50.0
@@ -409,9 +409,9 @@ class ChunkGenerator:
         self.giants_active = 0
         
         # Maximum number of each type to have active at once
-        self.MAX_HORIZON_TRAVELERS = 3
-        self.MAX_SKY_TRAVELERS = 2
-        self.MAX_GIANTS = 1
+        self.MAX_HORIZON_TRAVELERS = 10
+        self.MAX_SKY_TRAVELERS = 10
+        self.MAX_GIANTS = 10
 
     def get_noise(self, x: float, z: float, scale: float) -> float:
         return noise.pnoise2(
