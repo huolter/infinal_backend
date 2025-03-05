@@ -176,7 +176,7 @@ class NPC:
         }
         self.rotation = random.uniform(0, 2 * math.pi)
         self.size = random.uniform(1, 5)
-        self.scale_factor = 1.0  # Track current scale relative to original size
+        self.scale_factor = 1.0
         self.speed = random.uniform(0.05, 0.5)
         self.direction = {
             'x': math.cos(self.rotation) * self.speed,
@@ -208,7 +208,7 @@ class NPC:
                 }
     
     def hit(self):
-        self.scale_factor = max(self.scale_factor * 0.9, 0.1)  # Shrink by 10%, min 0.1
+        self.scale_factor = max(self.scale_factor * 0.9, 0.1)
 
     def get_data(self) -> Dict:
         return {
@@ -216,7 +216,7 @@ class NPC:
             'name': self.name,
             'position': self.position,
             'rotation': self.rotation,
-            'size': self.size * self.scale_factor  # Adjusted size based on scale factor
+            'size': self.size * self.scale_factor
         }
 
 class GameState:
@@ -250,14 +250,14 @@ class GameState:
 
     def add_player(self, player_id: str, name: str = "Unnamed", position: Dict = None):
         if position is None:
-            position = {'x': 0, 'y': 1.7, 'z': 0}
+            position = {'x': 0, 'y': 1.7, 'z': 0}  # Default y matches client camera height
         self.players[player_id] = {
             'position': position,
             'rotation': 0,
             'active_chunks': set(),
             'name': name,
             'joined_at': time.time(),
-            'scale_factor': 1.0  # Track player scale
+            'scale_factor': 1.0
         }
         self.last_activity[player_id] = time.time()
         self.connections_total += 1
@@ -272,7 +272,11 @@ class GameState:
 
     def update_player_position(self, player_id: str, position: Dict, rotation: float):
         if player_id in self.players:
-            self.players[player_id]['position'] = position
+            self.players[player_id]['position'] = {
+                'x': position['x'],
+                'y': position['y'],
+                'z': position['z']
+            }
             self.players[player_id]['rotation'] = rotation
             self.last_activity[player_id] = time.time()
 
