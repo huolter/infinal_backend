@@ -152,7 +152,8 @@ class HorizonTraveler(Entity):
         travel_angle = random.uniform(0, math.pi * 2)
         
         # Calculate a starting point far on the horizon (beyond view distance)
-        horizon_distance = 300  # Well beyond view distance
+        # But not so far that we can't see them - reduce from 300 to 100
+        horizon_distance = 100  # Close enough to see
         start_x = world_center['x'] + math.cos(travel_angle) * horizon_distance
         start_z = world_center['z'] + math.sin(travel_angle) * horizon_distance
         
@@ -214,7 +215,7 @@ class GiantTraveler(HorizonTraveler):
         self.type = random.choice(giant_types)
         
         # Giant-specific properties
-        giant_size = random.uniform(10.0, 20.0)  # 10-20x normal size
+        giant_size = random.uniform(15.0, 30.0)  # Larger giants (15-30x normal size)
         
         # Generate a more muted, earthy color for giants
         color_hue = random.uniform(0.05, 0.15)  # Brown/amber hues
@@ -311,7 +312,7 @@ class SkyTraveler(Entity):
             world_center = {'x': 0, 'z': 0}
             
         # Generate random properties
-        size = random.uniform(2.0, 6.0)
+        size = random.uniform(4.0, 10.0)  # Larger sky entities
         
         # Generate a soft, pastel color
         def generate_pastel():
@@ -326,7 +327,7 @@ class SkyTraveler(Entity):
             'size': size,
             'color': color,
             'speed': random.uniform(0.1, 0.3),  # Very slow, drifting speed
-            'altitude': random.uniform(30, 80),  # Height above ground
+            'altitude': random.uniform(20, 50),  # Lower height so they're more visible
             'startTime': time.time()
         }
         
@@ -337,7 +338,8 @@ class SkyTraveler(Entity):
         travel_angle = random.uniform(0, math.pi * 2)
         
         # Calculate a starting point far on the horizon (beyond view distance)
-        horizon_distance = 250  # Well beyond view distance
+        # Make them closer so we can see them
+        horizon_distance = 100
         start_x = world_center['x'] + math.cos(travel_angle) * horizon_distance
         start_z = world_center['z'] + math.sin(travel_angle) * horizon_distance
         
@@ -398,20 +400,27 @@ class ChunkGenerator:
         self.generated_chunks = 0
         self.cache_hits = 0
         
-        # Track when we last spawned special entities
-        self.last_horizon_spawn = time.time() - 60  # Start with a delay
-        self.last_sky_spawn = time.time() - 30  # Stagger the spawns
-        self.last_giant_spawn = time.time() - 90  # Even longer initial delay for giants
+        # Initialize immediately with entities
+        # Changed: Start with immediate spawns
+        self.last_horizon_spawn = time.time() - 999
+        self.last_sky_spawn = time.time() - 999
+        self.last_giant_spawn = time.time() - 999
         
         # Count of active special entities
-        self.horizon_travelers_active = 2
-        self.sky_travelers_active = 2
-        self.giants_active = 2
+        self.horizon_travelers_active = 0
+        self.sky_travelers_active = 0
+        self.giants_active = 0
         
         # Maximum number of each type to have active at once
-        self.MAX_HORIZON_TRAVELERS = 10
-        self.MAX_SKY_TRAVELERS = 10
-        self.MAX_GIANTS = 10
+        # Changed: Much higher limits
+        self.MAX_HORIZON_TRAVELERS = 20
+        self.MAX_SKY_TRAVELERS = 15
+        self.MAX_GIANTS = 5
+        
+        # Track the next spawn times to spread them out
+        self.next_horizon_spawn = 0
+        self.next_sky_spawn = 5  # Stagger initial spawns
+        self.next_giant_spawn = 10
 
     def get_noise(self, x: float, z: float, scale: float) -> float:
         return noise.pnoise2(
@@ -471,42 +480,49 @@ class ChunkGenerator:
             water_z = random.randint(0, 15 - water_size)
             chunk['water'] = {'size': water_size, 'position': {'x': water_x, 'z': water_z}}
             
-        # Consider spawning special horizon/sky travelers when generating chunks
-        # We only want to do this occasionally to avoid too many entities
+        # The key change: spawn entities more aggressively
         current_time = time.time()
         world_center = {'x': 0, 'z': 0}  # Assume world center is at origin
         
-        # Only check for spawning if this chunk is within a reasonable distance of the center
-        # This avoids spawning entities too far away when players explore distant areas
+        # Spawn distance reduced to ensure entities are visible
         chunk_center_x = chunk_x * 16 + 8
         chunk_center_z = chunk_z * 16 + 8
         distance_from_center = math.sqrt(chunk_center_x**2 + chunk_center_z**2)
         
-        if distance_from_center < 500:  # Within reasonable distance of center
-            # Only spawn travelers occasionally based on timers
-            if (current_time - self.last_horizon_spawn > 120 and  # 2 minutes between spawns
+        # Much more lenient distance check - any chunk within 800 units
+        if distance_from_center < 800:
+            # Check if it's time to spawn something new
+            if (current_time > self.next_horizon_spawn and
                 self.horizon_travelers_active < self.MAX_HORIZON_TRAVELERS):
                 
-                # Spawn a new horizon traveler
-                self.entity_manager.create_horizon_traveler(world_center)
-                self.last_horizon_spawn = current_time
-                self.horizon_travelers_active += 1
+                # Create multiple horizon travelers at once
+                for _ in range(random.randint(1, 3)):
+                    self.entity_manager.create_horizon_traveler(world_center)
+                    self.horizon_travelers_active += 1
                 
-            if (current_time - self.last_sky_spawn > 180 and  # 3 minutes between spawns
+                # Set next spawn time - much shorter interval
+                self.next_horizon_spawn = current_time + random.uniform(15, 30)
+                
+            if (current_time > self.next_sky_spawn and
                 self.sky_travelers_active < self.MAX_SKY_TRAVELERS):
                 
-                # Spawn a new sky traveler
-                self.entity_manager.create_sky_traveler(world_center)
-                self.last_sky_spawn = current_time
-                self.sky_travelers_active += 1
+                # Create multiple sky travelers at once
+                for _ in range(random.randint(1, 2)):
+                    self.entity_manager.create_sky_traveler(world_center)
+                    self.sky_travelers_active += 1
+                    
+                # Set next spawn time - much shorter interval
+                self.next_sky_spawn = current_time + random.uniform(20, 40)
                 
-            if (current_time - self.last_giant_spawn > 300 and  # 5 minutes between giants
+            if (current_time > self.next_giant_spawn and
                 self.giants_active < self.MAX_GIANTS):
                 
-                # Spawn a new giant
+                # Create a giant
                 self.entity_manager.create_giant_traveler(world_center)
-                self.last_giant_spawn = current_time
                 self.giants_active += 1
+                
+                # Set next spawn time - shorter but still less frequent than others
+                self.next_giant_spawn = current_time + random.uniform(40, 80)
 
         # Cache and return the chunk
         self.chunks[chunk_key] = chunk
@@ -580,6 +596,28 @@ class ChunkGenerator:
         self.horizon_travelers_active = entity_counts.get('horizon', 0)
         self.sky_travelers_active = entity_counts.get('sky', 0)
         self.giants_active = entity_counts.get('giant', 0)
+        
+        # Force spawn if we have no entities
+        current_time = time.time()
+        if self.horizon_travelers_active == 0 and current_time > self.next_horizon_spawn:
+            world_center = {'x': 0, 'z': 0}
+            for _ in range(random.randint(2, 5)):
+                self.entity_manager.create_horizon_traveler(world_center)
+                self.horizon_travelers_active += 1
+            self.next_horizon_spawn = current_time + random.uniform(10, 20)
+            
+        if self.sky_travelers_active == 0 and current_time > self.next_sky_spawn:
+            world_center = {'x': 0, 'z': 0}
+            for _ in range(random.randint(2, 3)):
+                self.entity_manager.create_sky_traveler(world_center)
+                self.sky_travelers_active += 1
+            self.next_sky_spawn = current_time + random.uniform(15, 30)
+            
+        if self.giants_active == 0 and current_time > self.next_giant_spawn:
+            world_center = {'x': 0, 'z': 0}
+            self.entity_manager.create_giant_traveler(world_center)
+            self.giants_active += 1
+            self.next_giant_spawn = current_time + random.uniform(30, 60)
 
 class EntityManager:
     """Manages all dynamic entities in the game"""
@@ -674,7 +712,7 @@ class EntityManager:
                     entity_counts['giant'] += 1
                 elif isinstance(entity, SkyTraveler):
                     entity_counts['sky'] += 1
-                elif isinstance(entity, HorizonTraveler):
+                elif isinstance(entity, HorizonTraveler) and not isinstance(entity, GiantTraveler):
                     entity_counts['horizon'] += 1
                 
                 # Check if entity has reached the end of its path (expired)
@@ -757,6 +795,9 @@ class GameState:
         
         # Last update time for entity simulation
         self.last_entity_update = time.time()
+        
+        # Spawn initial entities
+        self.initial_entities_spawned = False
 
     def add_player(self, player_id: str, name: str = "Unnamed", position: Dict = None):
         if position is None:
@@ -773,6 +814,23 @@ class GameState:
         self.last_activity[player_id] = time.time()
         self.connections_total += 1
         self.connections_active += 1
+        
+        # Spawn initial entities if not already done
+        if not self.initial_entities_spawned:
+            self.initial_entities_spawned = True
+            world_center = {'x': 0, 'z': 0}
+            
+            # Spawn a starter set of entities
+            for _ in range(10):
+                self.entity_manager.create_horizon_traveler(world_center)
+            
+            for _ in range(5):
+                self.entity_manager.create_sky_traveler(world_center)
+                
+            for _ in range(2):
+                self.entity_manager.create_giant_traveler(world_center)
+                
+            print("Initial entities spawned")
 
     def remove_player(self, player_id: str):
         if player_id in self.players:
@@ -829,7 +887,7 @@ class GameState:
             
         pos = self.players[player_id]['position']
         
-        # Use a much larger radius for entities to ensure smooth transitions
+        # Increased radius to see entities from much further away
         radius = self.VIEW_DISTANCE * 32  # Double the normal view radius
         
         # Get entities within range
