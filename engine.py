@@ -15,7 +15,7 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://gualterio.com", "http://localhost:*"],
+    allow_origins=["https://gualterio.com", "http://localhost:*", "*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -174,11 +174,11 @@ class NPC:
         self.name = self.generate_name()
         self.position = {
             'x': random.uniform(-100, 100),
-            'y': random.uniform(8, 10),  # Elevated position
+            'y': random.uniform(0, 10),  # Elevated position
             'z': random.uniform(-100, 100)
         }
         self.rotation = random.uniform(0, 2 * math.pi)
-        self.size = random.uniform(3, 5)  # Giant size (3x to 5x normal)
+        self.size = random.uniform(1, 25)  # Giant size (3x to 5x normal)
         self.speed = random.uniform(0.02, 0.1)  # Units per update
         self.direction = {
             'x': math.cos(self.rotation) * self.speed,
@@ -188,9 +188,9 @@ class NPC:
     def generate_name(self) -> str:
         """Generate a random name for the NPC"""
         first = random.choice(self.FIRST_NAMES)
-        second = random.choice(self.SECOND_NAMES)
+        #second = random.choice(self.SECOND_NAMES)
         number = random.randint(1, 99)
-        return f"{first}_{second}_{number}"
+        return f"{first}_{number}"
     
     def update_position(self):
         """Update the NPC's position based on its direction and speed"""
@@ -234,7 +234,7 @@ class GameState:
         self.chunk_generator = ChunkGenerator()
         self.VIEW_DISTANCE = 3
         self.time_of_day = 0
-        self.DAY_NIGHT_CYCLE = 120
+        self.DAY_NIGHT_CYCLE = 240
         self.last_activity = {}
         self.connections_total = 0
         self.connections_active = 0
