@@ -45,20 +45,35 @@ class Entity:
     def __init__(self, entity_id, entity_type, position, properties=None):
         self.id = entity_id
         self.type = entity_type
-        self.position = position
+        self.position = position.copy()  # Use copy to avoid reference issues
         self.properties = properties or {}
         self.velocity = {'x': 0, 'y': 0, 'z': 0}
         self.rotation = 0
         self.created_at = time.time()
         self.last_update = self.created_at
         self.active = True
-        self.lifespan = random.uniform(60, 300)  # Entities live between 1-5 minutes
+        
+        # Set a long travel path
+        self.path_length = random.uniform(500, 1000)  # How far the entity will travel
+        self.distance_traveled = 0  # Track how far it has gone
         
     def update(self, dt):
         """Update entity position based on velocity"""
+        # Calculate distance moved this frame
+        distance_this_frame = math.sqrt(
+            (self.velocity['x'] * dt) ** 2 +
+            (self.velocity['z'] * dt) ** 2
+        )
+        
+        # Update position
         self.position['x'] += self.velocity['x'] * dt
         self.position['y'] += self.velocity['y'] * dt
         self.position['z'] += self.velocity['z'] * dt
+        
+        # Track total distance traveled
+        self.distance_traveled += distance_this_frame
+        
+        # Update last update time
         self.last_update = time.time()
         
     def to_dict(self):
@@ -73,125 +88,188 @@ class Entity:
         }
         
     def is_expired(self):
-        """Check if the entity has reached the end of its lifespan"""
-        return (time.time() - self.created_at) > self.lifespan
+        """Check if the entity has reached the end of its path"""
+        return self.distance_traveled >= self.path_length
 
-class RunningEntity(Entity):
-    """Entity that runs/walks across the landscape"""
-    def __init__(self, entity_id, position):
-        # Randomly select a running entity type
-        entity_type = random.choice([
-            'fox', 'deer', 'rabbit', 'wolf', 'goat', 
-            'camel', 'scorpion', 'snake', 'eagle'
-        ])
+class HorizonTraveler(Entity):
+    """Entity that travels from horizon to horizon"""
+    def __init__(self, entity_id, position, world_center=None):
+        # The types of entity that can appear on the horizon
+        entity_types = [
+            'caravan', 'wanderer', 'traveler', 'nomad', 
+            'merchant', 'migrant', 'pilgrim', 'explorer'
+        ]
         
+        # Randomly select a type
+        entity_type = random.choice(entity_types)
+        
+        # Base position - will be overridden by horizon placement
+        if world_center is None:
+            world_center = {'x': 0, 'z': 0}
+            
         # Generate random properties
-        size = random.uniform(0.5, 2.0)  # Normal sized creatures
-        color = f"#{random.randint(0, 0xFFFFFF):06x}"  # Random color
+        size = random.uniform(0.8, 2.5)
+        color_hue = random.random()  # Random hue (0-1)
+        
+        # Convert HSL to RGB for a nice consistent color
+        def hsl_to_rgb(h, s, l):
+            if s == 0:
+                r = g = b = l
+            else:
+                def hue_to_rgb(p, q, t):
+                    if t < 0: t += 1
+                    if t > 1: t -= 1
+                    if t < 1/6: return p + (q - p) * 6 * t
+                    if t < 1/2: return q
+                    if t < 2/3: return p + (q - p) * (2/3 - t) * 6
+                    return p
+                
+                q = l * (1 + s) if l < 0.5 else l + s - l * s
+                p = 2 * l - q
+                r = hue_to_rgb(p, q, h + 1/3)
+                g = hue_to_rgb(p, q, h)
+                b = hue_to_rgb(p, q, h - 1/3)
+            
+            return (int(r * 255), int(g * 255), int(b * 255))
+        
+        # Generate a pleasing muted color
+        r, g, b = hsl_to_rgb(color_hue, 0.5, 0.6)
+        color = f"#{r:02x}{g:02x}{b:02x}"
         
         properties = {
             'size': size,
             'color': color,
-            'speed': random.uniform(0.05, 0.3),  # Much slower speed
-            'bounceHeight': random.uniform(0, 0.05),  # Gentler bouncing
-            'legCount': random.randint(2, 8),
-            'tailLength': random.uniform(0, 1.0),
-            'isGiant': False
+            'speed': random.uniform(0.2, 0.5),  # Slow, consistent speed
+            'isGiant': False,
+            'companions': random.randint(0, 3),  # How many additional entities travel with this one
+            'startTime': time.time()
         }
         
         super().__init__(entity_id, entity_type, position, properties)
         
-        # Set random velocity (only in x-z plane for runners)
-        angle = random.uniform(0, math.pi * 2)
+        # Set up path that crosses the world
+        # First, calculate a random angle through the world center
+        travel_angle = random.uniform(0, math.pi * 2)
+        
+        # Calculate a starting point far on the horizon (beyond view distance)
+        horizon_distance = 300  # Well beyond view distance
+        start_x = world_center['x'] + math.cos(travel_angle) * horizon_distance
+        start_z = world_center['z'] + math.sin(travel_angle) * horizon_distance
+        
+        # Set starting position at the horizon
+        self.position = {
+            'x': start_x,
+            'y': 0,  # Will be set to ground level
+            'z': start_z
+        }
+        
+        # Calculate end point on the opposite horizon
+        end_x = world_center['x'] - math.cos(travel_angle) * horizon_distance
+        end_z = world_center['z'] - math.sin(travel_angle) * horizon_distance
+        
+        # Calculate direction vector
+        dx = end_x - start_x
+        dz = end_z - start_z
+        distance = math.sqrt(dx*dx + dz*dz)
+        
+        # Normalize direction vector and scale by speed
         speed = properties['speed']
         self.velocity = {
-            'x': math.cos(angle) * speed,
+            'x': dx / distance * speed,
             'y': 0,
-            'z': math.sin(angle) * speed
+            'z': dz / distance * speed
         }
-        self.rotation = angle
         
-        # Direction change parameters
-        self.direction_change_interval = random.uniform(8, 20)  # Stay on course longer
-        self.next_direction_change = time.time() + self.direction_change_interval
+        # Set rotation to face the direction of travel
+        self.rotation = math.atan2(dz, dx)
         
-        # Longer lifespan for calmer entities
-        self.lifespan = random.uniform(180, 600)  # 3-10 minutes
+        # Set path length to the total horizon-to-horizon distance
+        self.path_length = distance
+        
+        # For smooth walking animation (very subtle)
+        self.walk_cycle = 0
         
     def update(self, dt):
-        """Update running entity with gentle direction changes"""
-        current_time = time.time()
+        """Update horizon traveler with smooth, consistent movement"""
+        # Increment walk cycle
+        self.walk_cycle += dt * self.properties['speed'] * 2
         
-        # Change direction occasionally
-        if current_time > self.next_direction_change:
-            # Get current speed
-            current_speed = math.sqrt(self.velocity['x']**2 + self.velocity['z']**2)
-            
-            # Set new direction with only a small change
-            angle_change = random.uniform(-math.pi/4, math.pi/4)  # Max 45 degree change
-            new_angle = self.rotation + angle_change
-            
-            self.velocity['x'] = math.cos(new_angle) * current_speed
-            self.velocity['z'] = math.sin(new_angle) * current_speed
-            self.rotation = new_angle
-            
-            # Schedule next direction change
-            self.direction_change_interval = random.uniform(8, 20)
-            self.next_direction_change = current_time + self.direction_change_interval
-            
-        # Add gentle bouncing effect for running
-        bounce_cycle = math.sin(current_time * 2 * self.properties['speed'])  # Slower bounce
-        self.position['y'] = max(0, self.properties['bounceHeight'] * bounce_cycle)
+        # Very subtle height variation for walking
+        self.position['y'] = max(0, math.sin(self.walk_cycle) * 0.05)
         
-        # Call parent update to apply velocity
+        # Apply base update to move along the path
         super().update(dt)
 
-class GiantEntity(RunningEntity):
-    """Giant humanoid entities that roam the world"""
-    def __init__(self, entity_id, position):
-        # Call parent constructor
-        super().__init__(entity_id, position)
+class GiantTraveler(HorizonTraveler):
+    """Giant entity that slowly walks from horizon to horizon"""
+    def __init__(self, entity_id, position, world_center=None):
+        # First initialize as a normal traveler
+        super().__init__(entity_id, position, world_center)
         
-        # Override type and properties for giants
-        self.type = random.choice([
+        # Override with giant-specific properties
+        giant_types = [
             'giant', 'colossus', 'titan', 'behemoth', 'golem'
-        ])
+        ]
+        
+        self.type = random.choice(giant_types)
         
         # Giant-specific properties
-        giant_size = random.uniform(10.0, 15.0)  # 10-15x normal size
-        giant_color = f"#{random.randint(0, 0xFFFFFF):06x}"  # Random color
+        giant_size = random.uniform(10.0, 20.0)  # 10-20x normal size
         
+        # Generate a more muted, earthy color for giants
+        color_hue = random.uniform(0.05, 0.15)  # Brown/amber hues
+        
+        # Convert HSL to RGB
+        def hsl_to_rgb(h, s, l):
+            if s == 0:
+                r = g = b = l
+            else:
+                def hue_to_rgb(p, q, t):
+                    if t < 0: t += 1
+                    if t > 1: t -= 1
+                    if t < 1/6: return p + (q - p) * 6 * t
+                    if t < 1/2: return q
+                    if t < 2/3: return p + (q - p) * (2/3 - t) * 6
+                    return p
+                
+                q = l * (1 + s) if l < 0.5 else l + s - l * s
+                p = 2 * l - q
+                r = hue_to_rgb(p, q, h + 1/3)
+                g = hue_to_rgb(p, q, h)
+                b = hue_to_rgb(p, q, h - 1/3)
+            
+            return (int(r * 255), int(g * 255), int(b * 255))
+        
+        r, g, b = hsl_to_rgb(color_hue, 0.6, 0.4)
+        giant_color = f"#{r:02x}{g:02x}{b:02x}"
+        
+        # Override properties
         self.properties.update({
             'size': giant_size,
             'color': giant_color,
-            'speed': random.uniform(0.02, 0.1),  # Slower but steady pace
-            'bounceHeight': 0.02,  # Very gentle footsteps
-            'legCount': 2,  # Humanoid legs
-            'armCount': 2,  # Humanoid arms
+            'speed': random.uniform(0.05, 0.1),  # Much slower than normal travelers
             'isGiant': True,
-            'headSize': random.uniform(1.0, 2.0),
-            'armLength': random.uniform(0.8, 1.2),
-            'stepInterval': random.uniform(2.0, 3.0)  # Time between footsteps
+            'companions': 0,  # Giants travel alone
+            'stepInterval': random.uniform(3.0, 5.0),  # Time between footsteps
+            'headSize': random.uniform(1.0, 1.5),
+            'armLength': random.uniform(0.8, 1.2)
         })
+        
+        # Adjust velocity for slower speed
+        speed = self.properties['speed']
+        direction = math.atan2(self.velocity['z'], self.velocity['x'])
+        
+        self.velocity = {
+            'x': math.cos(direction) * speed,
+            'y': 0,
+            'z': math.sin(direction) * speed
+        }
         
         # Add head position offset for height
         self.position['y'] = giant_size * 0.6  # Base height is roughly 60% of size
         
-        # Set slower velocity
-        angle = random.uniform(0, math.pi * 2)
-        speed = self.properties['speed']
-        self.velocity = {
-            'x': math.cos(angle) * speed,
-            'y': 0,
-            'z': math.sin(angle) * speed
-        }
-        
-        # Direction changes are more gradual for giants
-        self.direction_change_interval = random.uniform(15, 30)
-        self.next_direction_change = time.time() + self.direction_change_interval
-        
-        # Extra long lifespan for giants
-        self.lifespan = random.uniform(600, 1200)  # 10-20 minutes
+        # Set longer path to stay visible longer
+        self.path_length *= 1.5
         
         # Footstep tracking
         self.last_footstep = time.time()
@@ -200,24 +278,6 @@ class GiantEntity(RunningEntity):
     def update(self, dt):
         """Update giant entity with slow, deliberate movements"""
         current_time = time.time()
-        
-        # Handle direction changes more gradually
-        if current_time > self.next_direction_change:
-            # Get current speed
-            current_speed = math.sqrt(self.velocity['x']**2 + self.velocity['z']**2)
-            
-            # Set new direction with only a very small change (giants turn slowly)
-            angle_change = random.uniform(-math.pi/8, math.pi/8)  # Max 22.5 degree change
-            new_angle = self.rotation + angle_change
-            
-            # Smoothly transition to new direction
-            self.velocity['x'] = math.cos(new_angle) * current_speed
-            self.velocity['z'] = math.sin(new_angle) * current_speed
-            self.rotation = new_angle
-            
-            # Schedule next direction change
-            self.direction_change_interval = random.uniform(15, 30)
-            self.next_direction_change = current_time + self.direction_change_interval
         
         # Handle footsteps
         if current_time - self.last_footstep > self.footstep_interval:
@@ -228,248 +288,101 @@ class GiantEntity(RunningEntity):
             self.properties['footstep'] = False
         
         # Almost imperceptible gentle swaying for realism
-        sway = math.sin(current_time * 0.5) * 0.01
+        sway = math.sin(current_time * 0.2) * 0.02
         self.position['y'] = self.properties['size'] * 0.6 + sway
             
-        # Call parent update to apply velocity (skip RunningEntity update)
+        # Call parent update to apply velocity (skip HorizonTraveler update)
         Entity.update(self, dt)
 
-class FlyingEntity(Entity):
-    """Entity that flies through the air with geometric shapes"""
-    def __init__(self, entity_id, position):
-        # Select a random geometric shape
-        entity_type = random.choice([
-            'cube', 'sphere', 'tetrahedron', 'octahedron', 
-            'cylinder', 'torus', 'pyramid', 'cone'
-        ])
+class SkyTraveler(Entity):
+    """Entity that glides slowly across the sky"""
+    def __init__(self, entity_id, position, world_center=None):
+        # Types of sky travelers
+        sky_types = [
+            'balloon', 'cloud', 'airship', 'floater', 
+            'glider', 'zeppelin', 'blimp', 'kite'
+        ]
         
+        # Randomly select a type
+        entity_type = random.choice(sky_types)
+        
+        # Base position - will be overridden by horizon placement
+        if world_center is None:
+            world_center = {'x': 0, 'z': 0}
+            
         # Generate random properties
-        size = random.uniform(1.0, 4.0)  # Smaller, less imposing shapes
-        primary_color = f"#{random.randint(0, 0xFFFFFF):06x}"
-        secondary_color = f"#{random.randint(0, 0xFFFFFF):06x}"
-        emission_intensity = random.uniform(0.3, 0.8)  # Lower intensity
+        size = random.uniform(2.0, 6.0)
+        
+        # Generate a soft, pastel color
+        def generate_pastel():
+            r = random.randint(180, 255)
+            g = random.randint(180, 255)
+            b = random.randint(180, 255)
+            return f"#{r:02x}{g:02x}{b:02x}"
+            
+        color = generate_pastel()
         
         properties = {
             'size': size,
-            'primaryColor': primary_color,
-            'secondaryColor': secondary_color,
-            'emissive': random.choice([True, False]),
-            'emissionIntensity': emission_intensity,
-            'rotationSpeed': random.uniform(-0.3, 0.3),  # Slower rotation
-            'particleTrail': random.random() < 0.3,  # Only 30% have trails
-            'particleColor': f"#{random.randint(0, 0xFFFFFF):06x}"
+            'color': color,
+            'speed': random.uniform(0.1, 0.3),  # Very slow, drifting speed
+            'altitude': random.uniform(30, 80),  # Height above ground
+            'startTime': time.time()
         }
-        
-        # Flying entities start at a moderate height
-        position['y'] = random.uniform(5, 20)
         
         super().__init__(entity_id, entity_type, position, properties)
         
-        # Set gentle 3D velocity for flyers
-        angle_horizontal = random.uniform(0, math.pi * 2)
-        angle_vertical = random.uniform(-math.pi / 12, math.pi / 12)  # Mostly horizontal
-        speed = random.uniform(0.3, 1.0)  # Much slower speed
+        # Set up path that crosses the sky
+        # Calculate a random angle through the world center
+        travel_angle = random.uniform(0, math.pi * 2)
         
-        self.velocity = {
-            'x': math.cos(angle_horizontal) * math.cos(angle_vertical) * speed,
-            'y': math.sin(angle_vertical) * speed * 0.3,  # Vertical movement is even slower
-            'z': math.sin(angle_horizontal) * math.cos(angle_vertical) * speed
+        # Calculate a starting point far on the horizon (beyond view distance)
+        horizon_distance = 250  # Well beyond view distance
+        start_x = world_center['x'] + math.cos(travel_angle) * horizon_distance
+        start_z = world_center['z'] + math.sin(travel_angle) * horizon_distance
+        
+        # Set starting position at the horizon in the sky
+        self.position = {
+            'x': start_x,
+            'y': properties['altitude'],
+            'z': start_z
         }
         
-        # Change behavior occasionally but not too often
-        self.behavior_change_interval = random.uniform(10, 25)  # Longer behavior cycles
-        self.next_behavior_change = time.time() + self.behavior_change_interval
+        # Calculate end point on the opposite horizon
+        end_x = world_center['x'] - math.cos(travel_angle) * horizon_distance
+        end_z = world_center['z'] - math.sin(travel_angle) * horizon_distance
         
-        # Longer lifespan for flying entities
-        self.lifespan = random.uniform(180, 600)  # 3-10 minutes
+        # Calculate direction vector
+        dx = end_x - start_x
+        dz = end_z - start_z
+        distance = math.sqrt(dx*dx + dz*dz)
+        
+        # Normalize direction vector and scale by speed
+        speed = properties['speed']
+        self.velocity = {
+            'x': dx / distance * speed,
+            'y': 0,  # Level flight
+            'z': dz / distance * speed
+        }
+        
+        # Set rotation to face the direction of travel
+        self.rotation = math.atan2(dz, dx)
+        
+        # Set path length to the total horizon-to-horizon distance
+        self.path_length = distance
         
     def update(self, dt):
-        """Update flying entity with calmer, more graceful behavior"""
+        """Update sky traveler with smooth drifting motion"""
         current_time = time.time()
         
-        # Change behavior occasionally
-        if current_time > self.next_behavior_change:
-            # Random behavior changes
-            behavior = random.choice(['soar', 'glide', 'hover', 'circle'])
-            
-            # Get current speed
-            current_speed = math.sqrt(self.velocity['x']**2 + self.velocity['z']**2)
-            
-            if behavior == 'soar':
-                # Gently soar upward
-                self.velocity['y'] = random.uniform(0.1, 0.3)
-                # Maintain horizontal speed but reduce it slightly
-                self.velocity['x'] *= 0.9
-                self.velocity['z'] *= 0.9
-            elif behavior == 'glide':
-                # Glide downward gently
-                self.velocity['y'] = -random.uniform(0.05, 0.15)
-                # Slightly increase horizontal speed
-                self.velocity['x'] *= 1.1
-                self.velocity['z'] *= 1.1
-            elif behavior == 'hover':
-                # Almost stop to hover in place
-                self.velocity['x'] *= 0.2
-                self.velocity['y'] = 0
-                self.velocity['z'] *= 0.2
-            elif behavior == 'circle':
-                # Enter a gentle circular pattern
-                angle = current_time % (2 * math.pi)  # Use time to get a continuous angle
-                self.velocity['x'] = math.cos(angle) * current_speed * 0.5
-                self.velocity['z'] = math.sin(angle) * current_speed * 0.5
-                self.velocity['y'] = 0  # Level flight during circling
-            
-            # Schedule next behavior change
-            self.behavior_change_interval = random.uniform(10, 25)
-            self.next_behavior_change = current_time + self.behavior_change_interval
+        # Add very gentle vertical oscillation (barely noticeable bobbing)
+        time_factor = current_time - self.properties['startTime']
+        vertical_offset = math.sin(time_factor * 0.1) * 0.3
         
-        # Keep flying entities above ground with gentle correction
-        if self.position['y'] < 3 and self.velocity['y'] < 0:
-            self.velocity['y'] = random.uniform(0.1, 0.3)  # Gently rise if too low
+        # Adjust height with the subtle oscillation
+        self.position['y'] = self.properties['altitude'] + vertical_offset
         
-        # Cap maximum height with gentle correction
-        if self.position['y'] > 30:
-            self.velocity['y'] = -random.uniform(0.1, 0.2)  # Gently descend if too high
-            
-        # Update rotation - much gentler than before
-        self.rotation += self.properties['rotationSpeed'] * dt * 0.5
-        
-        # Call parent update to apply velocity
-        super().update(dt)
-
-class AbstractEntity(Entity):
-    """Abstract entities with interesting, calmer behaviors"""
-    def __init__(self, entity_id, position):
-        # Create interesting entity types
-        entity_type = random.choice([
-            'aurora', 'wisp', 'pollen', 'bubble', 
-            'dandelion', 'cloud', 'butterfly', 'ribbon'
-        ])
-        
-        # Generate properties with softer, more pleasant aesthetics
-        num_colors = random.randint(1, 3)  # Fewer colors for simplicity
-        pastel_colors = []
-        
-        # Generate pastel colors
-        for _ in range(num_colors):
-            # Pastel colors have high lightness and low-moderate saturation
-            h = random.random()  # Hue: 0-1
-            s = random.uniform(0.3, 0.7)  # Saturation: 30-70%
-            l = random.uniform(0.7, 0.9)  # Lightness: 70-90%
-            
-            # Convert HSL to RGB then to hex
-            def hsl_to_rgb(h, s, l):
-                if s == 0:
-                    r = g = b = l
-                else:
-                    def hue_to_rgb(p, q, t):
-                        if t < 0: t += 1
-                        if t > 1: t -= 1
-                        if t < 1/6: return p + (q - p) * 6 * t
-                        if t < 1/2: return q
-                        if t < 2/3: return p + (q - p) * (2/3 - t) * 6
-                        return p
-                    
-                    q = l * (1 + s) if l < 0.5 else l + s - l * s
-                    p = 2 * l - q
-                    r = hue_to_rgb(p, q, h + 1/3)
-                    g = hue_to_rgb(p, q, h)
-                    b = hue_to_rgb(p, q, h - 1/3)
-                
-                return (int(r * 255), int(g * 255), int(b * 255))
-            
-            r, g, b = hsl_to_rgb(h, s, l)
-            color = f"#{r:02x}{g:02x}{b:02x}"
-            pastel_colors.append(color)
-        
-        properties = {
-            'colors': pastel_colors,
-            'mainSize': random.uniform(0.5, 3.0),  # Smaller for gentler appearance
-            'segments': random.randint(5, 12),  # Smoother shapes
-            'pulseRate': random.uniform(0.1, 0.5),  # Much slower pulsing
-            'twistFactor': random.uniform(-0.5, 0.5),  # Less extreme twisting
-            'morphCycle': random.uniform(5, 15),  # Slower morphing
-            'spikiness': random.uniform(0, 0.3),  # Less spiky
-            'transparency': random.uniform(0.4, 0.8),  # More transparent
-            'tentacleCount': random.randint(0, 5),  # Fewer tentacles
-            'tentacleLength': random.uniform(0.5, 2)  # Shorter tentacles
-        }
-        
-        # Random starting position, not too high
-        position['y'] = random.uniform(1, 8)
-        
-        super().__init__(entity_id, entity_type, position, properties)
-        
-        # Use gentle motion patterns
-        self.velocity = {
-            'x': random.uniform(-0.2, 0.2),
-            'y': random.uniform(-0.1, 0.1),
-            'z': random.uniform(-0.2, 0.2)
-        }
-        
-        # State for special behaviors
-        self.phase = random.uniform(0, math.pi * 2)  # For cyclical behaviors
-        
-        # Longer lifespan for these gentle entities
-        self.lifespan = random.uniform(240, 720)  # 4-12 minutes
-        
-    def update(self, dt):
-        """Update abstract entity with gentle, mesmerizing behavior"""
-        current_time = time.time()
-        
-        # Increment phase very slowly
-        self.phase += dt * self.properties['pulseRate'] * 0.2
-        
-        # Gentle oscillating size - barely perceptible
-        current_size = self.properties['mainSize'] * (0.95 + 0.1 * math.sin(self.phase))
-        self.properties['currentSize'] = current_size
-        
-        # Very occasionally change velocity, but only slightly
-        if random.random() < 0.01:  # 1% chance per update
-            # Get current speed
-            current_speed = math.sqrt(
-                self.velocity['x']**2 + 
-                self.velocity['y']**2 + 
-                self.velocity['z']**2
-            )
-            
-            # Maintain similar speed but change direction slightly
-            angle_h = random.uniform(-math.pi/6, math.pi/6)  # Small horizontal change
-            angle_v = random.uniform(-math.pi/8, math.pi/8)  # Even smaller vertical change
-            
-            # Calculate new velocity maintaining approximate speed
-            self.velocity['x'] += math.cos(angle_h) * 0.05
-            self.velocity['z'] += math.sin(angle_h) * 0.05
-            self.velocity['y'] += math.sin(angle_v) * 0.03
-            
-            # Normalize and scale back to similar speed
-            total = math.sqrt(
-                self.velocity['x']**2 + 
-                self.velocity['y']**2 + 
-                self.velocity['z']**2
-            )
-            
-            if total > 0:
-                factor = current_speed / total
-                self.velocity['x'] *= factor
-                self.velocity['y'] *= factor
-                self.velocity['z'] *= factor
-        
-        # Add very subtle sine wave movement
-        self.position['x'] += math.sin(self.phase * 0.3) * 0.01
-        self.position['y'] += math.sin(self.phase * 0.2) * 0.01
-        self.position['z'] += math.sin(self.phase * 0.25) * 0.01
-        
-        # Keep above ground with gentle correction
-        if self.position['y'] < 0.5:
-            self.position['y'] = 0.5
-            self.velocity['y'] = abs(self.velocity['y']) * 0.5  # Gentle bounce
-        
-        # Cap maximum height with gentle correction
-        if self.position['y'] > 15:
-            self.velocity['y'] = -abs(self.velocity['y']) * 0.5  # Gentle descent
-        
-        # Call parent update to apply velocity
+        # Apply base update to continue along the path
         super().update(dt)
 
 class ChunkGenerator:
@@ -485,9 +398,20 @@ class ChunkGenerator:
         self.generated_chunks = 0
         self.cache_hits = 0
         
-        # Track when we last spawned a giant
-        self.last_giant_spawn = time.time()
-        self.giants_spawned = 0
+        # Track when we last spawned special entities
+        self.last_horizon_spawn = time.time() - 60  # Start with a delay
+        self.last_sky_spawn = time.time() - 30  # Stagger the spawns
+        self.last_giant_spawn = time.time() - 90  # Even longer initial delay for giants
+        
+        # Count of active special entities
+        self.horizon_travelers_active = 0
+        self.sky_travelers_active = 0
+        self.giants_active = 0
+        
+        # Maximum number of each type to have active at once
+        self.MAX_HORIZON_TRAVELERS = 3
+        self.MAX_SKY_TRAVELERS = 2
+        self.MAX_GIANTS = 1
 
     def get_noise(self, x: float, z: float, scale: float) -> float:
         return noise.pnoise2(
@@ -546,43 +470,43 @@ class ChunkGenerator:
             water_x = random.randint(0, 15 - water_size)
             water_z = random.randint(0, 15 - water_size)
             chunk['water'] = {'size': water_size, 'position': {'x': water_x, 'z': water_z}}
-
-        # Add dynamic entities occasionally (less frequently than before)
-        if random.random() < 0.15:  # 15% chance per chunk instead of 30%
-            # Create 1-2 dynamic entities in this chunk
-            for _ in range(random.randint(1, 2)):
-                # Random position within the chunk
-                entity_x = (chunk_x * 16) + random.uniform(0, 16) 
-                entity_z = (chunk_z * 16) + random.uniform(0, 16)
-                
-                # Create a dynamic entity
-                self.entity_manager.create_random_entity({
-                    'x': entity_x,
-                    'y': 0,  # Will be adjusted by the entity type
-                    'z': entity_z
-                })
-
-        # Occasionally add a giant (very rare)
+            
+        # Consider spawning special horizon/sky travelers when generating chunks
+        # We only want to do this occasionally to avoid too many entities
         current_time = time.time()
-        if (self.giants_spawned < 2 and  # Limit to 2 giants in the world
-            current_time - self.last_giant_spawn > 300 and  # At least 5 minutes between spawns
-            random.random() < 0.01):  # Very low chance per chunk
-            
-            # Random position within the chunk
-            entity_x = (chunk_x * 16) + random.uniform(4, 12)  # Stay away from edges 
-            entity_z = (chunk_z * 16) + random.uniform(4, 12)  # Stay away from edges
-            
-            # Create a giant entity
-            giant = self.entity_manager.create_giant({
-                'x': entity_x,
-                'y': 0,
-                'z': entity_z
-            })
-            
-            if giant:
+        world_center = {'x': 0, 'z': 0}  # Assume world center is at origin
+        
+        # Only check for spawning if this chunk is within a reasonable distance of the center
+        # This avoids spawning entities too far away when players explore distant areas
+        chunk_center_x = chunk_x * 16 + 8
+        chunk_center_z = chunk_z * 16 + 8
+        distance_from_center = math.sqrt(chunk_center_x**2 + chunk_center_z**2)
+        
+        if distance_from_center < 500:  # Within reasonable distance of center
+            # Only spawn travelers occasionally based on timers
+            if (current_time - self.last_horizon_spawn > 120 and  # 2 minutes between spawns
+                self.horizon_travelers_active < self.MAX_HORIZON_TRAVELERS):
+                
+                # Spawn a new horizon traveler
+                self.entity_manager.create_horizon_traveler(world_center)
+                self.last_horizon_spawn = current_time
+                self.horizon_travelers_active += 1
+                
+            if (current_time - self.last_sky_spawn > 180 and  # 3 minutes between spawns
+                self.sky_travelers_active < self.MAX_SKY_TRAVELERS):
+                
+                # Spawn a new sky traveler
+                self.entity_manager.create_sky_traveler(world_center)
+                self.last_sky_spawn = current_time
+                self.sky_travelers_active += 1
+                
+            if (current_time - self.last_giant_spawn > 300 and  # 5 minutes between giants
+                self.giants_active < self.MAX_GIANTS):
+                
+                # Spawn a new giant
+                self.entity_manager.create_giant_traveler(world_center)
                 self.last_giant_spawn = current_time
-                self.giants_spawned += 1
-                print(f"Giant {giant.type} spawned at ({entity_x}, {entity_z})")
+                self.giants_active += 1
 
         # Cache and return the chunk
         self.chunks[chunk_key] = chunk
@@ -646,7 +570,16 @@ class ChunkGenerator:
             "total_chunks_generated": self.generated_chunks,
             "cache_hits": self.cache_hits,
             "cache_size": len(self.chunks),
+            "horizon_travelers": self.horizon_travelers_active,
+            "sky_travelers": self.sky_travelers_active,
+            "giants": self.giants_active
         }
+        
+    def update_entity_counts(self, entity_counts):
+        """Update the counts of active special entities"""
+        self.horizon_travelers_active = entity_counts.get('horizon', 0)
+        self.sky_travelers_active = entity_counts.get('sky', 0)
+        self.giants_active = entity_counts.get('giant', 0)
 
 class EntityManager:
     """Manages all dynamic entities in the game"""
@@ -654,83 +587,97 @@ class EntityManager:
         self.entities = {}  # id -> entity
         self.entity_counter = 0
         self.last_update = time.time()
-        self.max_entities = 100  # Reduced max entities for better performance
         
-    def create_entity(self, entity_type, position):
-        """Create a new entity of the specified type"""
+    def create_horizon_traveler(self, world_center):
+        """Create a new horizon traveler entity"""
         self.entity_counter += 1
         entity_id = f"entity_{self.entity_counter}"
         
-        if entity_type == "runner":
-            entity = RunningEntity(entity_id, position)
-        elif entity_type == "flyer":
-            entity = FlyingEntity(entity_id, position)
-        elif entity_type == "abstract":
-            entity = AbstractEntity(entity_id, position)
-        else:
-            return None
-            
+        # Create the traveler with the current world center
+        entity = HorizonTraveler(entity_id, {'x': 0, 'y': 0, 'z': 0}, world_center)
         self.entities[entity_id] = entity
+        
+        # If the traveler has companions, create them too
+        num_companions = entity.properties.get('companions', 0)
+        for i in range(num_companions):
+            self.entity_counter += 1
+            companion_id = f"entity_{self.entity_counter}"
+            
+            # Create companion with slight offset
+            offset_x = random.uniform(-5, 5)
+            offset_z = random.uniform(-5, 5)
+            companion_pos = {
+                'x': entity.position['x'] + offset_x,
+                'y': 0,
+                'z': entity.position['z'] + offset_z
+            }
+            
+            companion = HorizonTraveler(companion_id, companion_pos, world_center)
+            
+            # Make sure companions have the same speed and direction
+            companion.velocity = entity.velocity.copy()
+            companion.rotation = entity.rotation
+            
+            # Adjust companion properties
+            companion.properties['size'] *= 0.8  # Slightly smaller
+            companion.properties['companions'] = 0  # No further companions
+            
+            self.entities[companion_id] = companion
+        
+        print(f"Created horizon traveler {entity.type} with {num_companions} companions")
         return entity
-    
-    def create_giant(self, position):
-        """Create a new giant entity"""
+        
+    def create_sky_traveler(self, world_center):
+        """Create a new sky traveler entity"""
         self.entity_counter += 1
         entity_id = f"entity_{self.entity_counter}"
         
-        giant = GiantEntity(entity_id, position)
-        self.entities[entity_id] = giant
-        return giant
+        # Create the traveler with the current world center
+        entity = SkyTraveler(entity_id, {'x': 0, 'y': 0, 'z': 0}, world_center)
+        self.entities[entity_id] = entity
         
-    def create_random_entity(self, position):
-        """Create a random entity at the specified position"""
-        # Enforce entity limit
-        if len(self.entities) >= self.max_entities:
-            # Find and remove expired entities first
-            expired_ids = [eid for eid, e in self.entities.items() if e.is_expired()]
-            
-            # If no expired entities, remove the oldest
-            if not expired_ids:
-                oldest_id = min(self.entities.items(), key=lambda x: x[1].created_at)[0]
-                expired_ids = [oldest_id]
-                
-            # Remove entities
-            for eid in expired_ids:
-                del self.entities[eid]
-            
-        # Choose a random entity type with weighted probabilities
-        entity_type = random.choices(
-            ["runner", "flyer", "abstract"],
-            weights=[0.4, 0.3, 0.3],  # More balanced distribution
-            k=1
-        )[0]
+        print(f"Created sky traveler {entity.type} at altitude {entity.properties['altitude']:.1f}")
+        return entity
         
-        return self.create_entity(entity_type, position)
+    def create_giant_traveler(self, world_center):
+        """Create a new giant traveler entity"""
+        self.entity_counter += 1
+        entity_id = f"entity_{self.entity_counter}"
         
-    def update(self):
+        # Create the giant with the current world center
+        entity = GiantTraveler(entity_id, {'x': 0, 'y': 0, 'z': 0}, world_center)
+        self.entities[entity_id] = entity
+        
+        print(f"Created giant {entity.type} of size {entity.properties['size']:.1f}")
+        return entity
+        
+    def update(self, dt, chunk_generator=None):
         """Update all entities"""
-        current_time = time.time()
-        dt = current_time - self.last_update
-        self.last_update = current_time
+        # Track counts of special entity types
+        entity_counts = {
+            'horizon': 0,
+            'sky': 0,
+            'giant': 0
+        }
         
-        # Cap dt to avoid large jumps
-        dt = min(dt, 0.05)  # Slower movement overall
-        
+        # List of entities to remove
         entities_to_remove = []
+        
+        # Update each entity
         for entity_id, entity in self.entities.items():
             try:
+                # Apply movement update
                 entity.update(dt)
                 
-                # Check if entity is too far from origin (limit world size)
-                distance = math.sqrt(
-                    entity.position['x']**2 + 
-                    entity.position['z']**2
-                )
+                # Count special entity types
+                if isinstance(entity, GiantTraveler):
+                    entity_counts['giant'] += 1
+                elif isinstance(entity, SkyTraveler):
+                    entity_counts['sky'] += 1
+                elif isinstance(entity, HorizonTraveler):
+                    entity_counts['horizon'] += 1
                 
-                if distance > 1000:  # 1000 units from origin
-                    entities_to_remove.append(entity_id)
-                    
-                # Check if entity has expired
+                # Check if entity has reached the end of its path (expired)
                 if entity.is_expired():
                     entities_to_remove.append(entity_id)
                     
@@ -738,10 +685,30 @@ class EntityManager:
                 print(f"Error updating entity {entity_id}: {e}")
                 entities_to_remove.append(entity_id)
                 
-        # Remove entities that are out of bounds or expired
+        # Remove entities that have reached the end of their path
         for entity_id in entities_to_remove:
             if entity_id in self.entities:
+                # Get the entity type before removing
+                entity = self.entities[entity_id]
+                entity_type = "unknown"
+                
+                if isinstance(entity, GiantTraveler):
+                    entity_type = "giant"
+                elif isinstance(entity, SkyTraveler):
+                    entity_type = "sky"
+                elif isinstance(entity, HorizonTraveler):
+                    entity_type = "horizon"
+                
+                print(f"Removing {entity_type} entity {entity_id} ({entity.type}) - path completed")
                 del self.entities[entity_id]
+                
+                # Adjust count since we just removed one
+                if entity_type in entity_counts:
+                    entity_counts[entity_type] -= 1
+                    
+        # Update chunk generator's counts if provided
+        if chunk_generator:
+            chunk_generator.update_entity_counts(entity_counts)
             
     def get_entities_in_range(self, position, radius):
         """Get all entities within a certain radius of a position"""
@@ -862,8 +829,8 @@ class GameState:
             
         pos = self.players[player_id]['position']
         
-        # Match VIEW_DISTANCE but in world units
-        radius = self.VIEW_DISTANCE * 16
+        # Use a much larger radius for entities to ensure smooth transitions
+        radius = self.VIEW_DISTANCE * 32  # Double the normal view radius
         
         # Get entities within range
         return self.entity_manager.get_entities_in_range(pos, radius)
@@ -871,8 +838,9 @@ class GameState:
     def update_entities(self):
         """Update all dynamic entities"""
         current_time = time.time()
-        if current_time - self.last_entity_update >= 0.1:  # 10 updates per second (was 20)
-            self.entity_manager.update()
+        if current_time - self.last_entity_update >= 0.1:  # 10 updates per second
+            dt = current_time - self.last_entity_update
+            self.entity_manager.update(dt, self.chunk_generator)
             self.last_entity_update = current_time
         
     def get_stats(self) -> Dict:
@@ -1222,30 +1190,8 @@ class ConnectionManager:
             
         # Apply different actions
         if action == "click":
-            # Make the entity respond in some way
-            if isinstance(entity, RunningEntity):
-                # Make it look at the player
-                player_pos = self.game_state.players[client.player_id]['position']
-                dx = player_pos['x'] - entity.position['x']
-                dz = player_pos['z'] - entity.position['z']
-                entity.rotation = math.atan2(dz, dx)
-                
-                # Make it move away slowly
-                speed = entity.properties['speed']
-                entity.velocity['x'] = -math.cos(entity.rotation) * speed
-                entity.velocity['z'] = -math.sin(entity.rotation) * speed
-                
-            elif isinstance(entity, FlyingEntity):
-                # Make it hover in place
-                entity.velocity['x'] *= 0.1
-                entity.velocity['y'] *= 0.1
-                entity.velocity['z'] *= 0.1
-                
-            elif isinstance(entity, AbstractEntity):
-                # Make it pulse more vividly
-                entity.properties['pulseRate'] *= 2  # Temporary faster pulse
-                
-            elif isinstance(entity, GiantEntity):
+            # Wave at the player if it's a giant
+            if isinstance(entity, GiantTraveler):
                 # Make the giant turn toward the player and wave
                 player_pos = self.game_state.players[client.player_id]['position']
                 dx = player_pos['x'] - entity.position['x']
@@ -1262,7 +1208,7 @@ class ConnectionManager:
         """Reset the giant's waving flag after a delay"""
         await asyncio.sleep(3)
         entity = self.game_state.entity_manager.entities.get(entity_id)
-        if entity and isinstance(entity, GiantEntity):
+        if entity and isinstance(entity, GiantTraveler):
             entity.properties['waving'] = False
 
     async def update_time_task(self):
@@ -1335,7 +1281,7 @@ class ConnectionManager:
             try:
                 # Update entity positions and behaviors
                 self.game_state.update_entities()
-                await asyncio.sleep(0.1)  # 10 updates per second (was 20)
+                await asyncio.sleep(0.1)  # 10 updates per second
             except Exception as e:
                 print(f"Error in update_entities_task: {e}")
                 await asyncio.sleep(1)
@@ -1344,7 +1290,7 @@ class ConnectionManager:
         """Background task to broadcast entity updates to clients"""
         while True:
             try:
-                # Only broadcast every 200ms (5 times per second is enough for gentle entities)
+                # Broadcast entity updates 5 times per second
                 await asyncio.sleep(0.2)
                 
                 # For each active client, send nearby entity updates
