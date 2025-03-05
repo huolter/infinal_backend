@@ -59,7 +59,7 @@ class Entity:
 
         # Smoothing-related additions
         self.target_position = position.copy()  # Target position for smooth movement
-        self.smoothing_factor = 0.1  # Controls the smoothness (smaller = smoother)
+        self.smoothing_factor = 0.5  # Adjusted to 0.5 for tighter smoothing
 
     def update(self, dt):
         """Update entity position based on velocity, with smoothing."""
@@ -171,9 +171,7 @@ class HorizonTraveler(Entity):
 
     def update(self, dt):
         """Update horizon traveler with smooth, consistent movement"""
-        self.walk_cycle += dt * self.properties['speed'] * 2
-        self.position['y'] = max(0, math.sin(self.walk_cycle) * 0.05)
-        super().update(dt)
+        super().update(dt)  # No additional y-position oscillation
 
 class GiantTraveler(HorizonTraveler):
     """Giant entity that slowly walks from horizon to horizon"""
@@ -239,10 +237,7 @@ class GiantTraveler(HorizonTraveler):
             self.last_footstep = current_time
         else:
             self.properties['footstep'] = False
-
-        sway = math.sin(current_time * 0.2) * 0.02
-        self.position['y'] = self.properties['size'] * 0.6 + sway
-        Entity.update(self, dt)
+        super().update(dt)  # No additional sway
 
 class SkyTraveler(Entity):
     """Entity that glides slowly across the sky"""
@@ -300,11 +295,7 @@ class SkyTraveler(Entity):
 
     def update(self, dt):
         """Update sky traveler with smooth drifting motion"""
-        current_time = time.time()
-        time_factor = current_time - self.properties['startTime']
-        vertical_offset = math.sin(time_factor * 0.1) * 0.3
-        self.position['y'] = self.properties['altitude'] + vertical_offset
-        super().update(dt)
+        super().update(dt)  # No vertical oscillation
 
 class ChunkGenerator:
     def __init__(self, entity_manager):
@@ -706,7 +697,7 @@ class GameState:
     def update_entities(self):
         """Update all dynamic entities"""
         current_time = time.time()
-        if current_time - self.last_entity_update >= 0.1:
+        if current_time - self.last_entity_update >= 0.05:  # Adjusted to 0.05 for 20 Hz
             dt = current_time - self.last_entity_update
             self.entity_manager.update(dt, self.chunk_generator)
             self.last_entity_update = current_time
@@ -1051,7 +1042,7 @@ class ConnectionManager:
         while True:
             try:
                 self.game_state.update_entities()
-                await asyncio.sleep(0.1)
+                await asyncio.sleep(0.05)  # Adjusted to 0.05 for 20 Hz
             except Exception as e:
                 print(f"Error in update_entities_task: {e}")
                 await asyncio.sleep(1)
@@ -1060,7 +1051,7 @@ class ConnectionManager:
         """Background task to broadcast entity updates to clients"""
         while True:
             try:
-                await asyncio.sleep(0.1)  # Changed from 0.2 to 0.1 for 10 updates per second
+                await asyncio.sleep(0.05)  # Adjusted to 0.05 for 20 Hz
                 for player_id, client in list(self.connections.items()):
                     if not client.active:
                         continue
