@@ -1,7 +1,7 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 import json
-from typing import Dict, List, Tuple, Set, Optional
+from typing import Dict, Set, Optional
 import asyncio
 import random
 import math
@@ -40,285 +40,16 @@ class LRUCache(OrderedDict):
             oldest = next(iter(self))
             del self[oldest]
 
-class Entity:
-    """Base class for all dynamic entities in the game"""
-    def __init__(self, entity_id, entity_type, position, properties=None):
-        self.id = entity_id
-        self.type = entity_type
-        self.position = position.copy()
-        self.properties = properties or {}
-        self.velocity = {'x': 0, 'y': 0, 'z': 0}
-        self.rotation = 0
-        self.created_at = time.time()
-        self.last_update = self.created_at
-        self.active = True
-        self.path_length = random.uniform(500, 1000)
-        self.distance_traveled = 0
-        self.target_position = position.copy()
-        self.smoothing_factor = 0.2  # Reduced to 0.2 for smoother, slower adjustment
-
-    def update(self, dt):
-        """Update entity position based on velocity, with smoothing."""
-        self.target_position['x'] += self.velocity['x'] * dt
-        self.target_position['y'] += self.velocity['y'] * dt
-        self.target_position['z'] += self.velocity['z'] * dt
-
-        distance_this_frame = math.sqrt(
-            (self.velocity['x'] * dt) ** 2 +
-            (self.velocity['z'] * dt) ** 2
-        )
-        self.distance_traveled += distance_this_frame
-
-        self.position['x'] += (self.target_position['x'] - self.position['x']) * self.smoothing_factor
-        self.position['y'] += (self.target_position['y'] - self.position['y']) * self.smoothing_factor
-        self.position['z'] += (self.target_position['z'] - self.position['z']) * self.smoothing_factor
-
-        self.last_update = time.time()
-
-    def to_dict(self):
-        """Convert entity to dictionary for sending to clients"""
-        return {
-            'id': self.id,
-            'type': self.type,
-            'position': self.position,
-            'velocity': self.velocity,
-            'rotation': self.rotation,
-            'properties': self.properties
-        }
-
-    def is_expired(self):
-        """Check if the entity has reached the end of its path"""
-        return self.distance_traveled >= self.path_length
-
-class HorizonTraveler(Entity):
-    """Entity that travels from horizon to horizon"""
-    def __init__(self, entity_id, position, world_center=None):
-        entity_types = [
-            'caravan', 'wanderer', 'traveler', 'nomad',
-            'merchant', 'migrant', 'pilgrim', 'explorer'
-        ]
-        entity_type = random.choice(entity_types)
-
-        if world_center is None:
-            world_center = {'x': 0, 'z': 0}
-
-        size = random.uniform(0.8, 2.5)
-        color_hue = random.random()
-
-        def hsl_to_rgb(h, s, l):
-            if s == 0:
-                r = g = b = l
-            else:
-                def hue_to_rgb(p, q, t):
-                    if t < 0: t += 1
-                    if t > 1: t -= 1
-                    if t < 1/6: return p + (q - p) * 6 * t
-                    if t < 1/2: return q
-                    if t < 2/3: return p + (q - p) * (2/3 - t) * 6
-                    return p
-                q = l * (1 + s) if l < 0.5 else l + s - l * s
-                p = 2 * l - q
-                r = hue_to_rgb(p, q, h + 1/3)
-                g = hue_to_rgb(p, q, h)
-                b = hue_to_rgb(p, q, h - 1/3)
-            return (int(r * 255), int(g * 255), int(b * 255))
-
-        r, g, b = hsl_to_rgb(color_hue, 0.5, 0.6)
-        color = f"#{r:02x}{g:02x}{b:02x}"
-
-        properties = {
-            'size': size,
-            'color': color,
-            'speed': random.uniform(0.2, 0.5),
-            'isGiant': False,
-            'companions': random.randint(0, 3),
-            'startTime': time.time()
-        }
-
-        super().__init__(entity_id, entity_type, position, properties)
-
-        travel_angle = random.uniform(0, math.pi * 2)
-        horizon_distance = 100
-        start_x = world_center['x'] + math.cos(travel_angle) * horizon_distance
-        start_z = world_center['z'] + math.sin(travel_angle) * horizon_distance
-
-        self.position = {'x': start_x, 'y': 0, 'z': start_z}
-        self.target_position = self.position.copy()
-
-        end_x = world_center['x'] - math.cos(travel_angle) * horizon_distance
-        end_z = world_center['z'] - math.sin(travel_angle) * horizon_distance
-
-        dx = end_x - start_x
-        dz = end_z - start_z
-        distance = math.sqrt(dx*dx + dz*dz)
-
-        speed = properties['speed']
-        self.velocity = {
-            'x': dx / distance * speed,
-            'y': 0,
-            'z': dz / distance * speed
-        }
-
-        self.rotation = math.atan2(dz, dx)
-        self.path_length = distance
-
-    def update(self, dt):
-        """Update horizon traveler with smooth, consistent movement"""
-        super().update(dt)
-
-class GiantTraveler(HorizonTraveler):
-    """Giant entity that slowly walks from horizon to horizon"""
-    def __init__(self, entity_id, position, world_center=None):
-        super().__init__(entity_id, position, world_center)
-
-        giant_types = ['giant', 'colossus', 'titan', 'behemoth', 'golem']
-        self.type = random.choice(giant_types)
-
-        giant_size = random.uniform(15.0, 30.0)
-        color_hue = random.uniform(0.05, 0.15)
-
-        def hsl_to_rgb(h, s, l):
-            if s == 0:
-                r = g = b = l
-            else:
-                def hue_to_rgb(p, q, t):
-                    if t < 0: t += 1
-                    if t > 1: t -= 1
-                    if t < 1/6: return p + (q - p) * 6 * t
-                    if t < 1/2: return q
-                    if t < 2/3: return p + (q - p) * (2/3 - t) * 6
-                    return p
-                q = l * (1 + s) if l < 0.5 else l + s - l * s
-                p = 2 * l - q
-                r = hue_to_rgb(p, q, h + 1/3)
-                g = hue_to_rgb(p, q, h)
-                b = hue_to_rgb(p, q, h - 1/3)
-            return (int(r * 255), int(g * 255), int(b * 255))
-
-        r, g, b = hsl_to_rgb(color_hue, 0.6, 0.4)
-        giant_color = f"#{r:02x}{g:02x}{b:02x}"
-
-        self.properties.update({
-            'size': giant_size,
-            'color': giant_color,
-            'speed': random.uniform(0.05, 0.1),
-            'isGiant': True,
-            'companions': 0,
-            'stepInterval': random.uniform(3.0, 5.0),
-            'headSize': random.uniform(1.0, 1.5),
-            'armLength': random.uniform(0.8, 1.2)
-        })
-
-        speed = self.properties['speed']
-        direction = math.atan2(self.velocity['z'], self.velocity['x'])
-        self.velocity = {
-            'x': math.cos(direction) * speed,
-            'y': 0,
-            'z': math.sin(direction) * speed
-        }
-
-        self.position['y'] = giant_size * 0.6
-        self.target_position['y'] = self.position['y']
-        self.path_length *= 1.5
-        self.last_footstep = time.time()
-        self.footstep_interval = self.properties['stepInterval']
-
-    def update(self, dt):
-        """Update giant entity with slow, deliberate movements"""
-        current_time = time.time()
-        if current_time - self.last_footstep > self.footstep_interval:
-            self.properties['footstep'] = True
-            self.last_footstep = current_time
-        else:
-            self.properties['footstep'] = False
-        super().update(dt)
-
-class SkyTraveler(Entity):
-    """Entity that glides slowly across the sky"""
-    def __init__(self, entity_id, position, world_center=None):
-        sky_types = ['balloon', 'cloud', 'airship', 'floater',
-                     'glider', 'zeppelin', 'blimp', 'kite']
-        entity_type = random.choice(sky_types)
-
-        if world_center is None:
-            world_center = {'x': 0, 'z': 0}
-
-        size = random.uniform(4.0, 10.0)
-
-        def generate_pastel():
-            r = random.randint(180, 255)
-            g = random.randint(180, 255)
-            b = random.randint(180, 255)
-            return f"#{r:02x}{g:02x}{b:02x}"
-
-        color = generate_pastel()
-
-        properties = {
-            'size': size,
-            'color': color,
-            'speed': random.uniform(0.1, 0.3),
-            'altitude': random.uniform(20, 50),
-            'startTime': time.time()
-        }
-
-        super().__init__(entity_id, entity_type, position, properties)
-
-        travel_angle = random.uniform(0, math.pi * 2)
-        horizon_distance = 100
-        start_x = world_center['x'] + math.cos(travel_angle) * horizon_distance
-        start_z = world_center['z'] + math.sin(travel_angle) * horizon_distance
-
-        self.position = {'x': start_x, 'y': properties['altitude'], 'z': start_z}
-        self.target_position = self.position.copy()
-
-        end_x = world_center['x'] - math.cos(travel_angle) * horizon_distance
-        end_z = world_center['z'] - math.sin(travel_angle) * horizon_distance
-
-        dx = end_x - start_x
-        dz = end_z - start_z
-        distance = math.sqrt(dx*dx + dz*dz)
-
-        speed = properties['speed']
-        self.velocity = {
-            'x': dx / distance * speed,
-            'y': 0,
-            'z': dz / distance * speed
-        }
-
-        self.rotation = math.atan2(dz, dx)
-        self.path_length = distance
-
-    def update(self, dt):
-        """Update sky traveler with smooth drifting motion"""
-        super().update(dt)
-
 class ChunkGenerator:
-    def __init__(self, entity_manager):
+    """Generates and manages terrain chunks"""
+    def __init__(self):
         self.chunks = LRUCache(maxsize=2000)
         self.DENSITY = 0.3
         self.seed = random.randint(0, 1000000)
         self.biome_scale = 100.0
         self.terrain_scale = 50.0
-        self.entity_manager = entity_manager
-
         self.generated_chunks = 0
         self.cache_hits = 0
-
-        self.last_horizon_spawn = time.time() - 999
-        self.last_sky_spawn = time.time() - 999
-        self.last_giant_spawn = time.time() - 999
-
-        self.horizon_travelers_active = 0
-        self.sky_travelers_active = 0
-        self.giants_active = 0
-
-        self.MAX_HORIZON_TRAVELERS = 20
-        self.MAX_SKY_TRAVELERS = 15
-        self.MAX_GIANTS = 5
-
-        self.next_horizon_spawn = 0
-        self.next_sky_spawn = 5
-        self.next_giant_spawn = 10
 
     def get_noise(self, x: float, z: float, scale: float) -> float:
         return noise.pnoise2(
@@ -345,7 +76,7 @@ class ChunkGenerator:
         self.generated_chunks += 1
 
         biome = self.get_biome(chunk_x, chunk_z)
-        chunk = {'terrain': [], 'features': [], 'entities': [], 'biome': biome}
+        chunk = {'terrain': [], 'features': [], 'biome': biome}
 
         for z in range(16):
             terrain_row = []
@@ -371,34 +102,6 @@ class ChunkGenerator:
             water_x = random.randint(0, 15 - water_size)
             water_z = random.randint(0, 15 - water_size)
             chunk['water'] = {'size': water_size, 'position': {'x': water_x, 'z': water_z}}
-
-        current_time = time.time()
-        world_center = {'x': 0, 'z': 0}
-
-        chunk_center_x = chunk_x * 16 + 8
-        chunk_center_z = chunk_z * 16 + 8
-        distance_from_center = math.sqrt(chunk_center_x**2 + chunk_center_z**2)
-
-        if distance_from_center < 800:
-            if (current_time > self.next_horizon_spawn and
-                self.horizon_travelers_active < self.MAX_HORIZON_TRAVELERS):
-                for _ in range(random.randint(1, 3)):
-                    self.entity_manager.create_horizon_traveler(world_center)
-                    self.horizon_travelers_active += 1
-                self.next_horizon_spawn = current_time + random.uniform(15, 30)
-
-            if (current_time > self.next_sky_spawn and
-                self.sky_travelers_active < self.MAX_SKY_TRAVELERS):
-                for _ in range(random.randint(1, 2)):
-                    self.entity_manager.create_sky_traveler(world_center)
-                    self.sky_travelers_active += 1
-                self.next_sky_spawn = current_time + random.uniform(20, 40)
-
-            if (current_time > self.next_giant_spawn and
-                self.giants_active < self.MAX_GIANTS):
-                self.entity_manager.create_giant_traveler(world_center)
-                self.giants_active += 1
-                self.next_giant_spawn = current_time + random.uniform(40, 80)
 
         self.chunks[chunk_key] = chunk
         return chunk
@@ -458,148 +161,14 @@ class ChunkGenerator:
         return {
             "total_chunks_generated": self.generated_chunks,
             "cache_hits": self.cache_hits,
-            "cache_size": len(self.chunks),
-            "horizon_travelers": self.horizon_travelers_active,
-            "sky_travelers": self.sky_travelers_active,
-            "giants": self.giants_active
-        }
-
-    def update_entity_counts(self, entity_counts):
-        self.horizon_travelers_active = entity_counts.get('horizon', 0)
-        self.sky_travelers_active = entity_counts.get('sky', 0)
-        self.giants_active = entity_counts.get('giant', 0)
-
-        current_time = time.time()
-        if self.horizon_travelers_active == 0 and current_time > self.next_horizon_spawn:
-            world_center = {'x': 0, 'z': 0}
-            for _ in range(random.randint(2, 5)):
-                self.entity_manager.create_horizon_traveler(world_center)
-                self.horizon_travelers_active += 1
-            self.next_horizon_spawn = current_time + random.uniform(10, 20)
-
-        if self.sky_travelers_active == 0 and current_time > self.next_sky_spawn:
-            world_center = {'x': 0, 'z': 0}
-            for _ in range(random.randint(2, 3)):
-                self.entity_manager.create_sky_traveler(world_center)
-                self.sky_travelers_active += 1
-            self.next_sky_spawn = current_time + random.uniform(15, 30)
-
-        if self.giants_active == 0 and current_time > self.next_giant_spawn:
-            world_center = {'x': 0, 'z': 0}
-            self.entity_manager.create_giant_traveler(world_center)
-            self.giants_active += 1
-            self.next_giant_spawn = current_time + random.uniform(30, 60)
-
-class EntityManager:
-    def __init__(self):
-        self.entities = {}
-        self.entity_counter = 0
-        self.last_update = time.time()
-
-    def create_horizon_traveler(self, world_center):
-        self.entity_counter += 1
-        entity_id = f"entity_{self.entity_counter}"
-        entity = HorizonTraveler(entity_id, {'x': 0, 'y': 0, 'z': 0}, world_center)
-        self.entities[entity_id] = entity
-
-        num_companions = entity.properties.get('companions', 0)
-        for i in range(num_companions):
-            self.entity_counter += 1
-            companion_id = f"entity_{self.entity_counter}"
-            offset_x = random.uniform(-5, 5)
-            offset_z = random.uniform(-5, 5)
-            companion_pos = {
-                'x': entity.position['x'] + offset_x,
-                'y': 0,
-                'z': entity.position['z'] + offset_z
-            }
-            companion = HorizonTraveler(companion_id, companion_pos, world_center)
-            companion.velocity = entity.velocity.copy()
-            companion.rotation = entity.rotation
-            companion.properties['size'] *= 0.8
-            companion.properties['companions'] = 0
-            self.entities[companion_id] = companion
-
-        print(f"Created horizon traveler {entity.type} with {num_companions} companions")
-        return entity
-
-    def create_sky_traveler(self, world_center):
-        self.entity_counter += 1
-        entity_id = f"entity_{self.entity_counter}"
-        entity = SkyTraveler(entity_id, {'x': 0, 'y': 0, 'z': 0}, world_center)
-        self.entities[entity_id] = entity
-        print(f"Created sky traveler {entity.type} at altitude {entity.properties['altitude']:.1f}")
-        return entity
-
-    def create_giant_traveler(self, world_center):
-        self.entity_counter += 1
-        entity_id = f"entity_{self.entity_counter}"
-        entity = GiantTraveler(entity_id, {'x': 0, 'y': 0, 'z': 0}, world_center)
-        self.entities[entity_id] = entity
-        print(f"Created giant {entity.type} of size {entity.properties['size']:.1f}")
-        return entity
-
-    def update(self, dt, chunk_generator=None):
-        entity_counts = {'horizon': 0, 'sky': 0, 'giant': 0}
-        entities_to_remove = []
-
-        for entity_id, entity in self.entities.items():
-            try:
-                entity.update(dt)
-                if isinstance(entity, GiantTraveler):
-                    entity_counts['giant'] += 1
-                elif isinstance(entity, SkyTraveler):
-                    entity_counts['sky'] += 1
-                elif isinstance(entity, HorizonTraveler) and not isinstance(entity, GiantTraveler):
-                    entity_counts['horizon'] += 1
-                if entity.is_expired():
-                    entities_to_remove.append(entity_id)
-            except Exception as e:
-                print(f"Error updating entity {entity_id}: {e}")
-                entities_to_remove.append(entity_id)
-
-        for entity_id in entities_to_remove:
-            if entity_id in self.entities:
-                entity = self.entities[entity_id]
-                entity_type = "unknown"
-                if isinstance(entity, GiantTraveler):
-                    entity_type = "giant"
-                elif isinstance(entity, SkyTraveler):
-                    entity_type = "sky"
-                elif isinstance(entity, HorizonTraveler):
-                    entity_type = "horizon"
-                print(f"Removing {entity_type} entity {entity_id} ({entity.type}) - path completed")
-                del self.entities[entity_id]
-                if entity_type in entity_counts:
-                    entity_counts[entity_type] -= 1
-
-        if chunk_generator:
-            chunk_generator.update_entity_counts(entity_counts)
-
-    def get_entities_in_range(self, position, radius):
-        entities_in_range = []
-        for entity in self.entities.values():
-            dx = entity.position['x'] - position['x']
-            dz = entity.position['z'] - position['z']
-            distance = math.sqrt(dx*dx + dz*dz)
-            if distance <= radius:
-                entities_in_range.append(entity.to_dict())
-        return entities_in_range
-
-    def get_stats(self):
-        entity_types = {}
-        for entity in self.entities.values():
-            entity_types[entity.type] = entity_types.get(entity.type, 0) + 1
-        return {
-            "total_entities": len(self.entities),
-            "entity_types": entity_types
+            "cache_size": len(self.chunks)
         }
 
 class GameState:
+    """Manages the game state with players and landscape"""
     def __init__(self):
-        self.entity_manager = EntityManager()
         self.players: Dict[str, Dict] = {}
-        self.chunk_generator = ChunkGenerator(self.entity_manager)
+        self.chunk_generator = ChunkGenerator()
         self.VIEW_DISTANCE = 3
         self.time_of_day = 0
         self.DAY_NIGHT_CYCLE = 600
@@ -608,8 +177,6 @@ class GameState:
         self.connections_active = 0
         self.messages_received = 0
         self.messages_sent = 0
-        self.last_entity_update = time.time()
-        self.initial_entities_spawned = False
 
     def add_player(self, player_id: str, name: str = "Unnamed", position: Dict = None):
         if position is None:
@@ -624,17 +191,6 @@ class GameState:
         self.last_activity[player_id] = time.time()
         self.connections_total += 1
         self.connections_active += 1
-
-        if not self.initial_entities_spawned:
-            self.initial_entities_spawned = True
-            world_center = {'x': 0, 'z': 0}
-            for _ in range(10):
-                self.entity_manager.create_horizon_traveler(world_center)
-            for _ in range(5):
-                self.entity_manager.create_sky_traveler(world_center)
-            for _ in range(2):
-                self.entity_manager.create_giant_traveler(world_center)
-            print("Initial entities spawned")
 
     def remove_player(self, player_id: str):
         if player_id in self.players:
@@ -673,19 +229,6 @@ class GameState:
         self.players[player_id]['active_chunks'] = new_active_chunks
         return chunks
 
-    def get_nearby_entities(self, player_id: str) -> List[Dict]:
-        if player_id not in self.players:
-            return []
-        pos = self.players[player_id]['position']
-        radius = self.VIEW_DISTANCE * 32
-        return self.entity_manager.get_entities_in_range(pos, radius)
-
-    def update_entities(self):
-        """Update all dynamic entities with fixed dt"""
-        dt = 0.1  # Fixed dt matching the 10 Hz update rate
-        self.entity_manager.update(dt, self.chunk_generator)
-        self.last_entity_update = time.time()
-
     def get_stats(self) -> Dict:
         return {
             "players_total": self.connections_total,
@@ -693,11 +236,11 @@ class GameState:
             "messages_received": self.messages_received,
             "messages_sent": self.messages_sent,
             "chunks": self.chunk_generator.get_stats(),
-            "entities": self.entity_manager.get_stats(),
             "time_of_day": self.time_of_day
         }
 
 class ClientConnection:
+    """Manages a single client connection"""
     def __init__(self, websocket: WebSocket, manager):
         self.websocket = websocket
         self.manager = manager
@@ -707,7 +250,6 @@ class ClientConnection:
         self.is_authenticated = False
         self.active = True
         self.sent_chunks = set()
-        self.known_entities = set()
         self.message_count = 0
         self.message_time = time.time()
 
@@ -756,6 +298,7 @@ class ClientConnection:
         return True
 
 class ConnectionManager:
+    """Manages client connections and game state"""
     def __init__(self):
         self.connections: Dict[str, ClientConnection] = {}
         self.game_state = GameState()
@@ -763,8 +306,6 @@ class ConnectionManager:
         self.start_background_task(self.update_time_task())
         self.start_background_task(self.cleanup_inactive_players_task())
         self.start_background_task(self.keepalive_task())
-        self.start_background_task(self.update_entities_task())
-        self.start_background_task(self.broadcast_entities_task())
 
     def start_background_task(self, coroutine):
         task = asyncio.create_task(coroutine)
@@ -781,8 +322,6 @@ class ConnectionManager:
         self.game_state.add_player(client.player_id, client.name)
 
         chunks = self.game_state.get_nearby_chunks(client.player_id)
-        entities = self.game_state.get_nearby_entities(client.player_id)
-        client.known_entities = set(entity['id'] for entity in entities)
 
         players_data = {}
         for pid, player_data in self.game_state.players.items():
@@ -799,7 +338,6 @@ class ConnectionManager:
                 'player_id': client.player_id,
                 'chunks': chunks,
                 'players': players_data,
-                'entities': entities,
                 'time_of_day': self.game_state.time_of_day
             }
         })
@@ -855,11 +393,6 @@ class ConnectionManager:
         new_chunks = {k: v for k, v in current_chunks.items() if k not in client.sent_chunks}
         client.sent_chunks.update(new_chunks.keys())
 
-        entities = self.game_state.get_nearby_entities(client.player_id)
-        entity_ids = set(entity['id'] for entity in entities)
-        new_entities = [entity for entity in entities if entity['id'] not in client.known_entities]
-        client.known_entities = entity_ids
-
         if new_chunks:
             chunk_keys = list(new_chunks.keys())
             for i in range(0, len(chunk_keys), 3):
@@ -872,12 +405,6 @@ class ConnectionManager:
                     break
                 if i + 3 < len(chunk_keys):
                     await asyncio.sleep(0.05)
-
-        if new_entities:
-            await client.send_message({
-                'type': 'entities_update',
-                'data': {'entities': new_entities}
-            })
 
         await self.broadcast({
             'type': 'position',
@@ -922,11 +449,6 @@ class ConnectionManager:
                             'type': 'pong',
                             'data': {'server_time': time.time()}
                         })
-                    elif message_data['type'] == 'interact_entity':
-                        entity_id = message_data['data'].get('entity_id')
-                        action = message_data['data'].get('action')
-                        if entity_id and action:
-                            self.handle_entity_interaction(client, entity_id, action)
 
                 except asyncio.TimeoutError:
                     continue
@@ -939,24 +461,6 @@ class ConnectionManager:
                         break
         finally:
             await self.disconnect(client)
-
-    def handle_entity_interaction(self, client, entity_id, action):
-        entity = self.game_state.entity_manager.entities.get(entity_id)
-        if not entity:
-            return
-        if action == "click" and isinstance(entity, GiantTraveler):
-            player_pos = self.game_state.players[client.player_id]['position']
-            dx = player_pos['x'] - entity.position['x']
-            dz = player_pos['z'] - entity.position['z']
-            entity.rotation = math.atan2(dz, dx)
-            entity.properties['waving'] = True
-            asyncio.create_task(self.reset_giant_wave(entity_id))
-
-    async def reset_giant_wave(self, entity_id):
-        await asyncio.sleep(3)
-        entity = self.game_state.entity_manager.entities.get(entity_id)
-        if entity and isinstance(entity, GiantTraveler):
-            entity.properties['waving'] = False
 
     async def update_time_task(self):
         while True:
@@ -1006,35 +510,6 @@ class ConnectionManager:
             except Exception as e:
                 print(f"Error in keepalive_task: {e}")
                 await asyncio.sleep(15)
-
-    async def update_entities_task(self):
-        while True:
-            try:
-                self.game_state.update_entities()
-                await asyncio.sleep(0.1)  # Reverted to 10 Hz
-            except Exception as e:
-                print(f"Error in update_entities_task: {e}")
-                await asyncio.sleep(1)
-
-    async def broadcast_entities_task(self):
-        while True:
-            try:
-                await asyncio.sleep(0.1)  # Reverted to 10 Hz
-                for player_id, client in list(self.connections.items()):
-                    if not client.active:
-                        continue
-                    entities = self.game_state.get_nearby_entities(client.player_id)
-                    if entities:
-                        try:
-                            await client.send_message({
-                                'type': 'entities_update',
-                                'data': {'entities': entities}
-                            })
-                        except Exception:
-                            client.active = False
-            except Exception as e:
-                print(f"Error in broadcast_entities_task: {e}")
-                await asyncio.sleep(1)
 
 manager = ConnectionManager()
 
