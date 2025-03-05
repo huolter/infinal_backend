@@ -37,7 +37,7 @@ class GameState:
         self.messages_sent = 0
         self.weather_probabilities = {
             'stone_rain': 0.2,
-            'lightning': 0.3,
+            'lightning': 0.4,
             'mist': 0.5
         }
         self.current_weather = None
