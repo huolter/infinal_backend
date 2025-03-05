@@ -166,8 +166,8 @@ class ChunkGenerator:
 
 class NPC:
     """Represents a giant NPC that moves across the space"""
-    FIRST_NAMES = ["zappa", "funk", "jive", "rock", "jazz", "punk", "lock", "flare", "nova", "pulse"]
-    SECOND_NAMES = ["narcisus", "jupiter", "saturn", "mars", "venus", "apollo", "zeus", "athena", "hermes", "artemis"]
+    FIRST_NAMES = ["zappa", "damePapusa", "jive", "rock", "jazz", "punk", "JUanDomingo", "flare", "nova", "pulse"]
+    SECOND_NAMES = ["narcisus", "jupiter", "TRUMP", "mars", "venus", "apollo", "Peron", "athena", "hermes", "artemis"]
     
     def __init__(self, npc_id: str):
         self.id = npc_id
@@ -228,13 +228,13 @@ class NPC:
 
 class GameState:
     """Manages the game state with players and landscape"""
-    def __init__(self, num_npcs: int = 10):
+    def __init__(self, num_npcs: int = 20):
         self.players: Dict[str, Dict] = {}
         self.npcs: Dict[str, NPC] = {}
         self.chunk_generator = ChunkGenerator()
         self.VIEW_DISTANCE = 3
         self.time_of_day = 0
-        self.DAY_NIGHT_CYCLE = 600
+        self.DAY_NIGHT_CYCLE = 120
         self.last_activity = {}
         self.connections_total = 0
         self.connections_active = 0
