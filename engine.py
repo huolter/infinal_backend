@@ -81,14 +81,14 @@ class RunningEntity(Entity):
         ])
         
         # Generate random properties
-        size = random.uniform(0.5, 2.0)
+        size = random.uniform(0.5, 8.0)
         color = f"#{random.randint(0, 0xFFFFFF):06x}"  # Random color
         
         properties = {
             'size': size,
             'color': color,
-            'speed': random.uniform(0.5, 3.0),
-            'bounceHeight': random.uniform(0, 0.3),
+            'speed': random.uniform(0.1, 1.0),
+            'bounceHeight': random.uniform(0, 0.1),
             'legCount': random.randint(2, 8),
             'tailLength': random.uniform(0, 1.0)
         }
@@ -145,7 +145,7 @@ class FlyingEntity(Entity):
         ])
         
         # Generate random properties
-        size = random.uniform(1.0, 5.0)
+        size = random.uniform(1.0, 55.0)
         primary_color = f"#{random.randint(0, 0xFFFFFF):06x}"
         secondary_color = f"#{random.randint(0, 0xFFFFFF):06x}"
         emission_intensity = random.uniform(0.5, 2.0)
@@ -156,13 +156,13 @@ class FlyingEntity(Entity):
             'secondaryColor': secondary_color,
             'emissive': random.choice([True, False]),
             'emissionIntensity': emission_intensity,
-            'rotationSpeed': random.uniform(-2, 2),
+            'rotationSpeed': random.uniform(-1, 1),
             'particleTrail': random.choice([True, False]),
             'particleColor': f"#{random.randint(0, 0xFFFFFF):06x}"
         }
         
         # Flying entities start higher
-        position['y'] = random.uniform(10, 50)
+        position['y'] = random.uniform(1, 20)
         
         super().__init__(entity_id, entity_type, position, properties)
         
