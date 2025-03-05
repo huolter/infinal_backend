@@ -39,14 +39,292 @@ class LRUCache(OrderedDict):
         if len(self) > self.maxsize:
             oldest = next(iter(self))
             del self[oldest]
+
+class Entity:
+    """Base class for all dynamic entities in the game"""
+    def __init__(self, entity_id, entity_type, position, properties=None):
+        self.id = entity_id
+        self.type = entity_type
+        self.position = position
+        self.properties = properties or {}
+        self.velocity = {'x': 0, 'y': 0, 'z': 0}
+        self.rotation = 0
+        self.created_at = time.time()
+        self.last_update = self.created_at
+        self.active = True
+        
+    def update(self, dt):
+        """Update entity position based on velocity"""
+        self.position['x'] += self.velocity['x'] * dt
+        self.position['y'] += self.velocity['y'] * dt
+        self.position['z'] += self.velocity['z'] * dt
+        self.last_update = time.time()
+        
+    def to_dict(self):
+        """Convert entity to dictionary for sending to clients"""
+        return {
+            'id': self.id,
+            'type': self.type,
+            'position': self.position,
+            'velocity': self.velocity,
+            'rotation': self.rotation,
+            'properties': self.properties
+        }
+
+class RunningEntity(Entity):
+    """Entity that runs/walks across the landscape"""
+    def __init__(self, entity_id, position):
+        # Randomly select a running entity type
+        entity_type = random.choice([
+            'fox', 'deer', 'rabbit', 'wolf', 'goat', 
+            'camel', 'scorpion', 'snake', 'eagle'
+        ])
+        
+        # Generate random properties
+        size = random.uniform(0.5, 2.0)
+        color = f"#{random.randint(0, 0xFFFFFF):06x}"  # Random color
+        
+        properties = {
+            'size': size,
+            'color': color,
+            'speed': random.uniform(0.5, 3.0),
+            'bounceHeight': random.uniform(0, 0.3),
+            'legCount': random.randint(2, 8),
+            'tailLength': random.uniform(0, 1.0)
+        }
+        
+        super().__init__(entity_id, entity_type, position, properties)
+        
+        # Set random velocity (only in x-z plane for runners)
+        angle = random.uniform(0, math.pi * 2)
+        speed = properties['speed']
+        self.velocity = {
+            'x': math.cos(angle) * speed,
+            'y': 0,
+            'z': math.sin(angle) * speed
+        }
+        self.rotation = angle
+        
+        # Direction change parameters
+        self.direction_change_interval = random.uniform(3, 10)
+        self.next_direction_change = time.time() + self.direction_change_interval
+        
+    def update(self, dt):
+        """Update running entity with random direction changes"""
+        current_time = time.time()
+        
+        # Change direction occasionally
+        if current_time > self.next_direction_change:
+            # Get current speed
+            current_speed = math.sqrt(self.velocity['x']**2 + self.velocity['z']**2)
             
+            # Set new random direction
+            angle = random.uniform(0, math.pi * 2)
+            self.velocity['x'] = math.cos(angle) * current_speed
+            self.velocity['z'] = math.sin(angle) * current_speed
+            self.rotation = angle
+            
+            # Schedule next direction change
+            self.direction_change_interval = random.uniform(3, 10)
+            self.next_direction_change = current_time + self.direction_change_interval
+            
+        # Add bouncing effect for running
+        bounce_cycle = math.sin(current_time * 5 * self.properties['speed'])
+        self.position['y'] = max(0, self.properties['bounceHeight'] * bounce_cycle)
+        
+        # Call parent update to apply velocity
+        super().update(dt)
+
+class FlyingEntity(Entity):
+    """Entity that flies through the air with geometric shapes"""
+    def __init__(self, entity_id, position):
+        # Select a random geometric shape
+        entity_type = random.choice([
+            'cube', 'sphere', 'tetrahedron', 'octahedron', 
+            'cylinder', 'torus', 'pyramid', 'cone'
+        ])
+        
+        # Generate random properties
+        size = random.uniform(1.0, 5.0)
+        primary_color = f"#{random.randint(0, 0xFFFFFF):06x}"
+        secondary_color = f"#{random.randint(0, 0xFFFFFF):06x}"
+        emission_intensity = random.uniform(0.5, 2.0)
+        
+        properties = {
+            'size': size,
+            'primaryColor': primary_color,
+            'secondaryColor': secondary_color,
+            'emissive': random.choice([True, False]),
+            'emissionIntensity': emission_intensity,
+            'rotationSpeed': random.uniform(-2, 2),
+            'particleTrail': random.choice([True, False]),
+            'particleColor': f"#{random.randint(0, 0xFFFFFF):06x}"
+        }
+        
+        # Flying entities start higher
+        position['y'] = random.uniform(10, 50)
+        
+        super().__init__(entity_id, entity_type, position, properties)
+        
+        # Set random 3D velocity for flyers
+        angle_horizontal = random.uniform(0, math.pi * 2)
+        angle_vertical = random.uniform(-math.pi / 6, math.pi / 6)  # Mostly horizontal
+        speed = random.uniform(2.0, 10.0)
+        
+        self.velocity = {
+            'x': math.cos(angle_horizontal) * math.cos(angle_vertical) * speed,
+            'y': math.sin(angle_vertical) * speed,
+            'z': math.sin(angle_horizontal) * math.cos(angle_vertical) * speed
+        }
+        
+        # Change behavior occasionally
+        self.behavior_change_interval = random.uniform(5, 15)
+        self.next_behavior_change = time.time() + self.behavior_change_interval
+        
+    def update(self, dt):
+        """Update flying entity with more complex behavior"""
+        current_time = time.time()
+        
+        # Change behavior occasionally
+        if current_time > self.next_behavior_change:
+            # Random behavior changes
+            behavior = random.choice(['soar', 'dive', 'zigzag', 'hover'])
+            
+            if behavior == 'soar':
+                # Soar upward
+                self.velocity['y'] = random.uniform(2, 5)
+                self.velocity['x'] *= 0.8
+                self.velocity['z'] *= 0.8
+            elif behavior == 'dive':
+                # Dive downward
+                self.velocity['y'] = -random.uniform(3, 7)
+                self.velocity['x'] *= 1.2
+                self.velocity['z'] *= 1.2
+            elif behavior == 'zigzag':
+                # Sharp direction change
+                angle = random.uniform(0, math.pi * 2)
+                speed = math.sqrt(self.velocity['x']**2 + self.velocity['z']**2)
+                self.velocity['x'] = math.cos(angle) * speed * 1.5
+                self.velocity['z'] = math.sin(angle) * speed * 1.5
+            elif behavior == 'hover':
+                # Slow down and hover
+                self.velocity['x'] *= 0.2
+                self.velocity['y'] *= 0.2
+                self.velocity['z'] *= 0.2
+            
+            # Schedule next behavior change
+            self.behavior_change_interval = random.uniform(5, 15)
+            self.next_behavior_change = current_time + self.behavior_change_interval
+        
+        # Keep flying entities above ground
+        if self.position['y'] < 5 and self.velocity['y'] < 0:
+            self.velocity['y'] *= -0.8  # Bounce up if getting too low
+        
+        # Cap maximum height
+        if self.position['y'] > 100:
+            self.velocity['y'] = -abs(self.velocity['y'])
+            
+        # Update rotation
+        self.rotation += self.properties['rotationSpeed'] * dt
+        
+        # Call parent update to apply velocity
+        super().update(dt)
+
+class AbstractEntity(Entity):
+    """Abstract, crazy entities with unusual properties and behaviors"""
+    def __init__(self, entity_id, position):
+        # Create bizarre entity types
+        entity_type = random.choice([
+            'vortex', 'hyperblob', 'quantumFlux', 'dimensionTear',
+            'cosmicJellyfish', 'realityGlitch', 'thoughtForm', 'dreamFragment'
+        ])
+        
+        # Generate wild properties
+        num_colors = random.randint(1, 5)
+        colors = [f"#{random.randint(0, 0xFFFFFF):06x}" for _ in range(num_colors)]
+        
+        properties = {
+            'colors': colors,
+            'mainSize': random.uniform(1.0, 8.0),
+            'segments': random.randint(3, 20),
+            'pulseRate': random.uniform(0.5, 5.0),
+            'twistFactor': random.uniform(-3, 3),
+            'morphCycle': random.uniform(2, 10),
+            'spikiness': random.uniform(0, 1),
+            'transparency': random.uniform(0.2, 0.9),
+            'soundEmission': random.choice([True, False]),
+            'soundFrequency': random.uniform(50, 2000) if random.random() > 0.5 else None,
+            'teleportation': random.random() > 0.8,  # 20% chance to teleport
+            'warpReality': random.random() > 0.9,    # 10% chance to warp reality
+            'tentacleCount': random.randint(0, 12),
+            'tentacleLength': random.uniform(0, 5)
+        }
+        
+        # Random starting position
+        position['y'] = random.uniform(0, 30)
+        
+        super().__init__(entity_id, entity_type, position, properties)
+        
+        # Use complex motion patterns
+        self.velocity = {
+            'x': random.uniform(-2, 2),
+            'y': random.uniform(-2, 2),
+            'z': random.uniform(-2, 2)
+        }
+        
+        # State for special behaviors
+        self.phase = random.uniform(0, math.pi * 2)  # For cyclical behaviors
+        self.state_change_time = time.time() + random.uniform(2, 8)
+        
+    def update(self, dt):
+        """Update abstract entity with bizarre, unpredictable behavior"""
+        current_time = time.time()
+        self.phase += dt * self.properties['pulseRate']
+        
+        # Apply weird movement patterns
+        if self.properties['teleportation'] and random.random() < 0.01:
+            # Occasional teleportation
+            self.position['x'] += random.uniform(-20, 20)
+            self.position['y'] += random.uniform(-10, 10)
+            self.position['z'] += random.uniform(-20, 20)
+            
+            # Keep above ground
+            self.position['y'] = max(2, self.position['y'])
+        
+        # Oscillating size
+        current_size = self.properties['mainSize'] * (0.8 + 0.4 * math.sin(self.phase))
+        self.properties['currentSize'] = current_size
+        
+        # Apply sinusoidal motion
+        if random.random() < 0.05:
+            # Occasionally change velocity
+            self.velocity = {
+                'x': random.uniform(-3, 3),
+                'y': random.uniform(-2, 2),
+                'z': random.uniform(-3, 3)
+            }
+        
+        # Add sine wave movement
+        self.position['x'] += math.sin(self.phase * 0.3) * 0.1
+        self.position['y'] += math.sin(self.phase * 0.5) * 0.1
+        self.position['z'] += math.sin(self.phase * 0.7) * 0.1
+        
+        # Keep above ground with a minimum bounce
+        if self.position['y'] < 1:
+            self.position['y'] = 1
+            self.velocity['y'] = abs(self.velocity['y']) + random.uniform(0.5, 2)
+        
+        # Call parent update to apply velocity
+        super().update(dt)
+
 class ChunkGenerator:
-    def __init__(self):
+    def __init__(self, entity_manager):
         self.chunks = LRUCache(maxsize=2000)  # Store up to 2000 chunks in memory
         self.DENSITY = 0.1
         self.seed = random.randint(0, 1000000)
         self.biome_scale = 100.0
         self.terrain_scale = 50.0
+        self.entity_manager = entity_manager
         
         # Track statistics for debugging
         self.generated_chunks = 0
@@ -100,8 +378,8 @@ class ChunkGenerator:
             chunk['terrain'].append(terrain_row)
             chunk['features'].append(feature_row)
 
-        # Generate entities and water features
-        chunk['entities'] = self.generate_entities(chunk_x, chunk_z, biome)
+        # Generate static entities and water features
+        chunk['static_entities'] = self.generate_static_entities(chunk_x, chunk_z, biome)
         
         # Add water to plains biomes occasionally
         if biome == 'plains' and random.random() < 0.1:
@@ -109,6 +387,21 @@ class ChunkGenerator:
             water_x = random.randint(0, 15 - water_size)
             water_z = random.randint(0, 15 - water_size)
             chunk['water'] = {'size': water_size, 'position': {'x': water_x, 'z': water_z}}
+
+        # Add dynamic entities occasionally
+        if random.random() < 0.3:  # 30% chance per chunk
+            # Create 1-3 dynamic entities in this chunk
+            for _ in range(random.randint(1, 3)):
+                # Random position within the chunk
+                entity_x = (chunk_x * 16) + random.uniform(0, 16) 
+                entity_z = (chunk_z * 16) + random.uniform(0, 16)
+                
+                # Create a dynamic entity
+                self.entity_manager.create_random_entity({
+                    'x': entity_x,
+                    'y': 0,  # Will be adjusted by the entity type
+                    'z': entity_z
+                })
 
         # Cache and return the chunk
         self.chunks[chunk_key] = chunk
@@ -145,7 +438,7 @@ class ChunkGenerator:
                 return {'type': 'snow_patch', 'size': size}
         return 0
 
-    def generate_entities(self, chunk_x: int, chunk_z: int, biome: str) -> List[Dict]:
+    def generate_static_entities(self, chunk_x: int, chunk_z: int, biome: str) -> List[Dict]:
         entities = []
         # Only add entities with a certain probability
         if random.random() > 0.7:
@@ -155,7 +448,7 @@ class ChunkGenerator:
                 entities.append({
                     'type': entity_type,
                     'position': {'x': random.uniform(0, 16), 'y': 0, 'z': random.uniform(0, 16)},
-                    'id': f"entity_{chunk_x}_{chunk_z}_{i}"
+                    'id': f"static_entity_{chunk_x}_{chunk_z}_{i}"
                 })
         return entities
 
@@ -174,10 +467,112 @@ class ChunkGenerator:
             "cache_size": len(self.chunks),
         }
 
+class EntityManager:
+    """Manages all dynamic entities in the game"""
+    def __init__(self):
+        self.entities = {}  # id -> entity
+        self.entity_counter = 0
+        self.last_update = time.time()
+        self.max_entities = 200  # Maximum number of entities to avoid overload
+        
+    def create_entity(self, entity_type, position):
+        """Create a new entity of the specified type"""
+        self.entity_counter += 1
+        entity_id = f"entity_{self.entity_counter}"
+        
+        if entity_type == "runner":
+            entity = RunningEntity(entity_id, position)
+        elif entity_type == "flyer":
+            entity = FlyingEntity(entity_id, position)
+        elif entity_type == "abstract":
+            entity = AbstractEntity(entity_id, position)
+        else:
+            return None
+            
+        self.entities[entity_id] = entity
+        return entity
+        
+    def create_random_entity(self, position):
+        """Create a random entity at the specified position"""
+        # Enforce entity limit
+        if len(self.entities) >= self.max_entities:
+            # Remove oldest entity
+            oldest_id = min(self.entities.items(), key=lambda x: x[1].created_at)[0]
+            del self.entities[oldest_id]
+            
+        # Choose a random entity type with weighted probabilities
+        entity_type = random.choices(
+            ["runner", "flyer", "abstract"],
+            weights=[0.5, 0.3, 0.2],  # 50% runners, 30% flyers, 20% abstract
+            k=1
+        )[0]
+        
+        return self.create_entity(entity_type, position)
+        
+    def update(self):
+        """Update all entities"""
+        current_time = time.time()
+        dt = current_time - self.last_update
+        self.last_update = current_time
+        
+        # Cap dt to avoid large jumps
+        dt = min(dt, 0.1)
+        
+        entities_to_remove = []
+        for entity_id, entity in self.entities.items():
+            try:
+                entity.update(dt)
+                
+                # Check if entity is too far from origin (limit world size)
+                distance = math.sqrt(
+                    entity.position['x']**2 + 
+                    entity.position['z']**2
+                )
+                
+                if distance > 1000:  # 1000 units from origin
+                    entities_to_remove.append(entity_id)
+            except Exception as e:
+                print(f"Error updating entity {entity_id}: {e}")
+                entities_to_remove.append(entity_id)
+                
+        # Remove entities that are out of bounds
+        for entity_id in entities_to_remove:
+            del self.entities[entity_id]
+            
+    def get_entities_in_range(self, position, radius):
+        """Get all entities within a certain radius of a position"""
+        entities_in_range = []
+        
+        for entity in self.entities.values():
+            # Calculate distance (only in x-z plane to match chunk loading)
+            dx = entity.position['x'] - position['x']
+            dz = entity.position['z'] - position['z']
+            distance = math.sqrt(dx*dx + dz*dz)
+            
+            if distance <= radius:
+                entities_in_range.append(entity.to_dict())
+                
+        return entities_in_range
+        
+    def get_stats(self):
+        """Get statistics about entities"""
+        entity_types = {}
+        for entity in self.entities.values():
+            if entity.type in entity_types:
+                entity_types[entity.type] += 1
+            else:
+                entity_types[entity.type] = 1
+                
+        return {
+            "total_entities": len(self.entities),
+            "entity_types": entity_types
+        }
+
 class GameState:
     def __init__(self):
+        self.entity_manager = EntityManager()
         self.players: Dict[str, Dict] = {}
-        self.chunk_generator = ChunkGenerator()
+        self.chunk_generator = ChunkGenerator(self.entity_manager)
         self.VIEW_DISTANCE = 3  # Increased view distance for better experience
         self.time_of_day = 0
         self.DAY_NIGHT_CYCLE = 600  # Longer day-night cycle (10 minutes)
@@ -188,6 +583,9 @@ class GameState:
         self.connections_active = 0
         self.messages_received = 0
         self.messages_sent = 0
+        
+        # Last update time for entity simulation
+        self.last_entity_update = time.time()
 
     def add_player(self, player_id: str, name: str = "Unnamed", position: Dict = None):
         if position is None:
@@ -252,6 +650,26 @@ class GameState:
         # Update player's active chunks
         self.players[player_id]['active_chunks'] = new_active_chunks
         return chunks
+    
+    def get_nearby_entities(self, player_id: str) -> List[Dict]:
+        """Get all dynamic entities near a player"""
+        if player_id not in self.players:
+            return []
+            
+        pos = self.players[player_id]['position']
+        
+        # Match VIEW_DISTANCE but in world units
+        radius = self.VIEW_DISTANCE * 16
+        
+        # Get entities within range
+        return self.entity_manager.get_entities_in_range(pos, radius)
+    
+    def update_entities(self):
+        """Update all dynamic entities"""
+        current_time = time.time()
+        if current_time - self.last_entity_update >= 0.05:  # 20 updates per second
+            self.entity_manager.update()
+            self.last_entity_update = current_time
         
     def get_stats(self) -> Dict:
         return {
@@ -260,6 +678,7 @@ class GameState:
             "messages_received": self.messages_received,
             "messages_sent": self.messages_sent,
             "chunks": self.chunk_generator.get_stats(),
+            "entities": self.entity_manager.get_stats(),
             "time_of_day": self.time_of_day
         }
 
@@ -274,6 +693,7 @@ class ClientConnection:
         self.is_authenticated = False
         self.active = True
         self.sent_chunks = set()
+        self.known_entities = set()  # Track entities the client knows about
         self.message_count = 0
         self.message_time = time.time()
         
@@ -345,6 +765,8 @@ class ConnectionManager:
         self.start_background_task(self.update_time_task())
         self.start_background_task(self.cleanup_inactive_players_task())
         self.start_background_task(self.keepalive_task())
+        self.start_background_task(self.update_entities_task())
+        self.start_background_task(self.broadcast_entities_task())
     
     def start_background_task(self, coroutine):
         task = asyncio.create_task(coroutine)
@@ -369,6 +791,10 @@ class ConnectionManager:
         # Get initial chunks for new player
         chunks = self.game_state.get_nearby_chunks(client.player_id)
         
+        # Get nearby entities
+        entities = self.game_state.get_nearby_entities(client.player_id)
+        client.known_entities = set(entity['id'] for entity in entities)
+        
         # Prepare player data for sending
         players_data = {}
         for pid, player_data in self.game_state.players.items():
@@ -386,6 +812,7 @@ class ConnectionManager:
                 'player_id': client.player_id,
                 'chunks': chunks,
                 'players': players_data,
+                'entities': entities,
                 'time_of_day': self.game_state.time_of_day
             }
         })
@@ -467,6 +894,14 @@ class ConnectionManager:
         # Update sent chunks tracking
         client.sent_chunks.update(new_chunks.keys())
         
+        # Get nearby entities
+        entities = self.game_state.get_nearby_entities(client.player_id)
+        entity_ids = set(entity['id'] for entity in entities)
+        
+        # Only send entities that are new or have been updated
+        new_entities = [entity for entity in entities if entity['id'] not in client.known_entities]
+        client.known_entities = entity_ids
+        
         # Send chunks in small batches if there are many
         if new_chunks:
             chunk_keys = list(new_chunks.keys())
@@ -482,6 +917,13 @@ class ConnectionManager:
                 
                 if i + 3 < len(chunk_keys):
                     await asyncio.sleep(0.05)  # Small delay between batches
+        
+        # Send new entities if any
+        if new_entities:
+            await client.send_message({
+                'type': 'entities_update',
+                'data': {'entities': new_entities}
+            })
         
         # Broadcast position update to other players
         await self.broadcast({
@@ -541,6 +983,12 @@ class ConnectionManager:
                             'type': 'pong',
                             'data': {'server_time': time.time()}
                         })
+                    elif message_data['type'] == 'interact_entity':
+                        # Handle entity interaction (e.g., clicking or attacking)
+                        entity_id = message_data['data'].get('entity_id')
+                        action = message_data['data'].get('action')
+                        if entity_id and action:
+                            self.handle_entity_interaction(client, entity_id, action)
                 
                 except asyncio.TimeoutError:
                     # This is normal, just means no message received within timeout
@@ -560,6 +1008,32 @@ class ConnectionManager:
         finally:
             # Ensure client is cleaned up
             await self.disconnect(client)
+    
+    def handle_entity_interaction(self, client, entity_id, action):
+        """Handle player interaction with an entity"""
+        # Find the entity
+        entity = self.game_state.entity_manager.entities.get(entity_id)
+        if not entity:
+            return
+            
+        # Apply different actions
+        if action == "click":
+            # Make the entity respond in some way
+            if isinstance(entity, RunningEntity):
+                # Change direction dramatically
+                angle = random.uniform(0, math.pi * 2)
+                speed = math.sqrt(entity.velocity['x']**2 + entity.velocity['z']**2)
+                entity.velocity['x'] = math.cos(angle) * speed * 1.5
+                entity.velocity['z'] = math.sin(angle) * speed * 1.5
+                entity.rotation = angle
+            elif isinstance(entity, FlyingEntity):
+                # Make it soar upward
+                entity.velocity['y'] = random.uniform(5, 10)
+            elif isinstance(entity, AbstractEntity):
+                # Trigger teleportation
+                entity.position['x'] += random.uniform(-10, 10)
+                entity.position['y'] += random.uniform(5, 15)
+                entity.position['z'] += random.uniform(-10, 10)
 
     async def update_time_task(self):
         """Background task to update time of day"""
@@ -624,6 +1098,45 @@ class ConnectionManager:
             except Exception as e:
                 print(f"Error in keepalive_task: {e}")
                 await asyncio.sleep(15)
+    
+    async def update_entities_task(self):
+        """Background task to update all entities"""
+        while True:
+            try:
+                # Update entity positions and behaviors
+                self.game_state.update_entities()
+                await asyncio.sleep(0.05)  # 20 updates per second
+            except Exception as e:
+                print(f"Error in update_entities_task: {e}")
+                await asyncio.sleep(1)
+    
+    async def broadcast_entities_task(self):
+        """Background task to broadcast entity updates to clients"""
+        while True:
+            try:
+                # Only broadcast every 100ms (10 times per second is enough for smooth visuals)
+                await asyncio.sleep(0.1)
+                
+                # For each active client, send nearby entity updates
+                for player_id, client in list(self.connections.items()):
+                    if not client.active:
+                        continue
+                        
+                    # Get current entities for this player
+                    entities = self.game_state.get_nearby_entities(client.player_id)
+                    
+                    # Create update message with full entity data
+                    if entities:
+                        try:
+                            await client.send_message({
+                                'type': 'entities_update',
+                                'data': {'entities': entities}
+                            })
+                        except Exception:
+                            client.active = False
+            except Exception as e:
+                print(f"Error in broadcast_entities_task: {e}")
+                await asyncio.sleep(1)
 
 manager = ConnectionManager()
 
