@@ -1,7 +1,7 @@
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 import json
-from typing import Dict, List, Tuple, Set
+from typing import Dict, List, Tuple, Set, Optional
 import asyncio
 import random
 import math
@@ -9,7 +9,6 @@ import noise
 import os
 import time
 import zlib
-from starlette.websockets import WebSocketDisconnect
 from collections import OrderedDict
 
 app = FastAPI()
@@ -247,7 +246,7 @@ class GameState:
                 new_active_chunks.add(chunk_key)
                 
                 # Only generate chunks that weren't already active
-                if chunk_key not in self.players[player_id]['active_chunks']:
+                if chunk_key not in self.players[player_id].get('active_chunks', set()):
                     chunks[chunk_key] = self.chunk_generator.generate_chunk(cx, cz)
         
         # Update player's active chunks
@@ -264,458 +263,374 @@ class GameState:
             "time_of_day": self.time_of_day
         }
 
-    async def update_time(self, manager):
-        while True:
-            try:
-                # Update time of day more slowly
-                self.time_of_day = (self.time_of_day + 1 / (self.DAY_NIGHT_CYCLE * 10)) % 1
-                
-                # Only broadcast time updates every second
-                if int(self.time_of_day * self.DAY_NIGHT_CYCLE) % 10 == 0:
-                    await manager.broadcast({
-                        'type': 'time_update',
-                        'data': {'time_of_day': self.time_of_day}
-                    })
-                    
-                await asyncio.sleep(0.1)
-            except Exception as e:
-                print(f"Error in update_time: {e}")
-                await asyncio.sleep(1)  # Back off on error
-                
-    async def cleanup_inactive_players(self, manager):
-        """Remove players who haven't sent updates in a while"""
-        while True:
-            try:
-                current_time = time.time()
-                inactive_players = []
-                
-                for player_id, last_time in self.last_activity.items():
-                    # If inactive for more than 2 minutes
-                    if current_time - last_time > 120:
-                        inactive_players.append(player_id)
-                
-                for player_id in inactive_players:
-                    print(f"Removing inactive player: {player_id}")
-                    self.remove_player(player_id)
-                    
-                    # Broadcast player left message
-                    await manager.broadcast({
-                        'type': 'player_left',
-                        'data': {'player_id': player_id, 'reason': 'inactive'}
-                    })
-                    
-                await asyncio.sleep(30)  # Check every 30 seconds
-            except Exception as e:
-                print(f"Error in cleanup_inactive_players: {e}")
-                await asyncio.sleep(30)
+class ClientConnection:
+    """Manages a single client connection"""
+    def __init__(self, websocket: WebSocket, manager):
+        self.websocket = websocket
+        self.manager = manager
+        self.player_id = f"player_{id(websocket)}"
+        self.name = f"Player_{self.player_id[:8]}"
+        self.last_activity = time.time()
+        self.is_authenticated = False
+        self.active = True
+        self.sent_chunks = set()
+        self.message_count = 0
+        self.message_time = time.time()
+        
+    async def authenticate(self, timeout=5.0):
+        """Try to get player name from authentication message"""
+        try:
+            # Wait for name with timeout
+            data = await asyncio.wait_for(self.websocket.receive_text(), timeout=timeout)
+            message = json.loads(data)
+            if message['type'] == 'set_name' and 'name' in message.get('data', {}):
+                self.name = message['data']['name']
+                print(f"Authenticated player: {self.name} (ID: {self.player_id})")
+                self.is_authenticated = True
+                return True
+        except asyncio.TimeoutError:
+            print(f"Authentication timeout for {self.player_id}")
+        except Exception as e:
+            print(f"Authentication error for {self.player_id}: {e}")
+        
+        return False
+        
+    async def send_message(self, message: Dict):
+        """Send a message to this client with error handling"""
+        if not self.active:
+            return False
+            
+        try:
+            # Compress large messages
+            message_str = json.dumps(message)
+            if len(message_str) > 1024:
+                compressed = zlib.compress(message_str.encode(), 6)
+                await self.websocket.send_bytes(compressed)
+            else:
+                await self.websocket.send_text(message_str)
+            
+            self.manager.game_state.messages_sent += 1
+            return True
+        except Exception as e:
+            print(f"Error sending to {self.player_id}: {e}")
+            self.active = False
+            return False
+            
+    def check_rate_limit(self) -> bool:
+        """Check if client is sending too many messages"""
+        current_time = time.time()
+        if current_time - self.message_time > 1.0:
+            # Reset counter if more than 1 second has passed
+            self.message_count = 1
+            self.message_time = current_time
+            return True
+            
+        # Increment counter
+        self.message_count += 1
+        
+        # Check if limit exceeded (20 msgs/second)
+        if self.message_count > 20:
+            print(f"Rate limit exceeded for {self.player_id}: {self.message_count} messages/second")
+            return False
+            
+        return True
 
 class ConnectionManager:
     def __init__(self):
-        self.active_connections: Dict[str, WebSocket] = {}  # player_id -> websocket
-        self.player_ids: Dict[WebSocket, str] = {}  # websocket -> player_id
-        self.last_message_time: Dict[str, float] = {}  # player_id -> timestamp
-        self.disconnected_websockets = set()  # To track disconnected websockets
+        self.connections: Dict[str, ClientConnection] = {}
         self.game_state = GameState()
         
         # Start background tasks
-        asyncio.create_task(self.game_state.update_time(self))
-        asyncio.create_task(self.game_state.cleanup_inactive_players(self))
-        asyncio.create_task(self.keepalive())
-        
-        # Compression level (0-9, higher = better compression but slower)
-        self.compression_level = 6
-        
-        # Rate limiting
-        self.rate_limits = {}  # player_id -> {count, first_request}
-        self.MAX_MESSAGES_PER_SECOND = 20
-
-    async def connect(self, websocket: WebSocket):
+        self.background_tasks = set()
+        self.start_background_task(self.update_time_task())
+        self.start_background_task(self.cleanup_inactive_players_task())
+        self.start_background_task(self.keepalive_task())
+    
+    def start_background_task(self, coroutine):
+        task = asyncio.create_task(coroutine)
+        self.background_tasks.add(task)
+        task.add_done_callback(self.background_tasks.discard)
+    
+    async def connect(self, websocket: WebSocket) -> ClientConnection:
+        """Handle a new client connection"""
         await websocket.accept()
         
-        # Generate a unique player ID
-        player_id = str(id(websocket))
-        self.active_connections[player_id] = websocket
-        self.player_ids[websocket] = player_id
-        self.last_message_time[player_id] = time.time()
+        # Create new client connection
+        client = ClientConnection(websocket, self)
+        self.connections[client.player_id] = client
+        print(f"New connection: {client.player_id}")
         
-        print(f"WebSocket connected: {player_id}")
-        
-        # Wait for player name with timeout
-        try:
-            name = await self.get_player_name(websocket)
-        except Exception as e:
-            name = f"Player_{player_id[:8]}"
-            print(f"Client connection issue: {e}, assigned name: {name}")
+        # Authenticate client (get name)
+        await client.authenticate()
         
         # Add player to game state
-        self.game_state.add_player(player_id, name)
+        self.game_state.add_player(client.player_id, client.name)
         
         # Get initial chunks for new player
-        chunks = self.game_state.get_nearby_chunks(player_id)
+        chunks = self.game_state.get_nearby_chunks(client.player_id)
         
         # Prepare player data for sending
         players_data = {}
         for pid, player_data in self.game_state.players.items():
-            if pid != player_id:  # Don't include the new player
-                player_data_copy = {
+            if pid != client.player_id:  # Don't include the new player
+                players_data[pid] = {
                     'position': player_data['position'],
                     'rotation': player_data['rotation'],
                     'name': player_data['name']
                 }
-                players_data[pid] = player_data_copy
         
-        try:
-            # Send initial game state to new player
-            await self.send_to_client(websocket, {
-                'type': 'init',
-                'data': {
-                    'player_id': player_id,
-                    'chunks': chunks,
-                    'players': players_data,
-                    'time_of_day': self.game_state.time_of_day
-                }
-            })
-            
-            # Notify other players about the new player
-            await self.broadcast({
-                'type': 'player_joined',
-                'data': {
-                    'player_id': player_id,
-                    'position': self.game_state.players[player_id]['position'],
-                    'rotation': self.game_state.players[player_id]['rotation'],
-                    'name': self.game_state.players[player_id]['name']
-                }
-            }, exclude_player=player_id)
-            
-            print(f"Player {player_id} ({name}) connected and initialized")
-            
-        except Exception as e:
-            print(f"Client {player_id} error during init: {e}")
-            await self.disconnect(websocket)
-
-    async def get_player_name(self, websocket: WebSocket) -> str:
-        """Get player name from initial message with timeout"""
-        try:
-            data = await asyncio.wait_for(websocket.receive_text(), timeout=5.0)
-            message = json.loads(data)
-            if message['type'] == 'set_name' and 'name' in message.get('data', {}):
-                return message['data']['name']
-        except Exception as e:
-            print(f"Error getting player name: {e}")
+        # Send initial game state to new player
+        await client.send_message({
+            'type': 'init',
+            'data': {
+                'player_id': client.player_id,
+                'chunks': chunks,
+                'players': players_data,
+                'time_of_day': self.game_state.time_of_day
+            }
+        })
         
-        # Default name if no valid name message received
-        return f"Player_{id(websocket)}"
+        # Notify other players about the new player
+        await self.broadcast({
+            'type': 'player_joined',
+            'data': {
+                'player_id': client.player_id,
+                'position': self.game_state.players[client.player_id]['position'],
+                'rotation': self.game_state.players[client.player_id]['rotation'],
+                'name': client.name
+            }
+        }, exclude=client.player_id)
+        
+        return client
 
-    async def disconnect(self, websocket: WebSocket):
+    async def disconnect(self, client: ClientConnection):
         """Handle client disconnection"""
-        # Mark as disconnected to prevent further operations
-        self.disconnected_websockets.add(websocket)
+        if client.player_id in self.connections:
+            del self.connections[client.player_id]
+            
+        # Remove from game state
+        self.game_state.remove_player(client.player_id)
         
-        if websocket in self.player_ids:
-            player_id = self.player_ids[websocket]
-            
-            # Clean up connection tracking
-            if player_id in self.active_connections:
-                del self.active_connections[player_id]
-            del self.player_ids[websocket]
-            if player_id in self.last_message_time:
-                del self.last_message_time[player_id]
-            if player_id in self.rate_limits:
-                del self.rate_limits[player_id]
-            
-            # Remove from game state
-            self.game_state.remove_player(player_id)
-            
-            # Notify other clients
-            try:
-                await self.broadcast({
-                    'type': 'player_left',
-                    'data': {'player_id': player_id}
-                })
-                print(f"Player {player_id} disconnected")
-            except Exception as e:
-                print(f"Error broadcasting player_left: {e}")
+        # Notify other clients
+        await self.broadcast({
+            'type': 'player_left',
+            'data': {'player_id': client.player_id}
+        })
+        
+        print(f"Disconnected: {client.player_id} ({client.name})")
 
-    async def send_to_client(self, websocket: WebSocket, message: Dict):
-        """Send a message to a specific client with compression"""
-        # Skip if the websocket is already disconnected
-        if websocket in self.disconnected_websockets:
-            return
-            
-        try:
-            # Compress message if it's large
-            message_str = json.dumps(message)
-            
-            if len(message_str) > 1024:  # Only compress messages larger than 1KB
-                compressed = zlib.compress(message_str.encode(), self.compression_level)
-                await websocket.send_bytes(compressed)
-            else:
-                await websocket.send_text(message_str)
-                
-            self.game_state.messages_sent += 1
-            
-        except Exception as e:
-            print(f"Error sending to client: {e}")
-            # Mark as disconnected
-            self.disconnected_websockets.add(websocket)
-            if websocket in self.player_ids:
-                await self.disconnect(websocket)
-            # Let the caller handle any disconnect exceptions
-            raise
-
-    async def broadcast(self, message: Dict, exclude_player: str = None):
-        """Broadcast a message to all clients except the excluded one"""
+    async def broadcast(self, message: Dict, exclude: Optional[str] = None):
+        """Broadcast a message to all active clients except excluded one"""
+        # Compress large messages once
         message_str = json.dumps(message)
         large_message = len(message_str) > 1024
+        compressed = None
         
         if large_message:
-            # Pre-compress large messages once
-            compressed = zlib.compress(message_str.encode(), self.compression_level)
+            compressed = zlib.compress(message_str.encode(), 6)
         
-        # Make a copy to avoid issues with concurrent modifications
-        connections_to_process = list(self.active_connections.items())
-        
-        # Send to each client in parallel
-        tasks = []
-        for player_id, websocket in connections_to_process:
-            if player_id != exclude_player and websocket not in self.disconnected_websockets:
+        # Send to each client (make a copy to avoid issues with concurrent modifications)
+        for player_id, client in list(self.connections.items()):
+            if player_id != exclude and client.active:
                 if large_message:
-                    tasks.append(self.send_bytes_to_client(websocket, compressed))
+                    try:
+                        await client.websocket.send_bytes(compressed)
+                        self.game_state.messages_sent += 1
+                    except Exception:
+                        # Will be cleaned up by the client handler
+                        client.active = False
                 else:
-                    tasks.append(self.send_text_to_client(websocket, message_str))
-        
-        if tasks:
-            # Wait for all sends to complete, ignoring individual errors
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            
-            # Count successful messages
-            success_count = sum(1 for r in results if not isinstance(r, Exception))
-            self.game_state.messages_sent += success_count
+                    try:
+                        await client.websocket.send_text(message_str)
+                        self.game_state.messages_sent += 1
+                    except Exception:
+                        # Will be cleaned up by the client handler
+                        client.active = False
 
-    async def send_text_to_client(self, websocket: WebSocket, message_str: str):
-        """Helper to send text message with error handling"""
-        # Skip if already disconnected
-        if websocket in self.disconnected_websockets:
-            return False
-            
-        try:
-            await websocket.send_text(message_str)
-            return True
-        except Exception as e:
-            # Mark as disconnected
-            self.disconnected_websockets.add(websocket)
-            if websocket in self.player_ids:
-                await self.disconnect(websocket)
-            return e
-
-    async def send_bytes_to_client(self, websocket: WebSocket, compressed_bytes: bytes):
-        """Helper to send binary message with error handling"""
-        # Skip if already disconnected
-        if websocket in self.disconnected_websockets:
-            return False
-            
-        try:
-            await websocket.send_bytes(compressed_bytes)
-            return True
-        except Exception as e:
-            # Mark as disconnected
-            self.disconnected_websockets.add(websocket)
-            if websocket in self.player_ids:
-                await self.disconnect(websocket)
-            return e
-
-    async def update_player(self, websocket: WebSocket, player_id: str, data: Dict):
+    async def update_player(self, client: ClientConnection, data: Dict):
         """Update player position and send nearby chunks"""
-        # Skip if the websocket is disconnected
-        if websocket in self.disconnected_websockets:
-            return
-            
-        # Update player state
         position = data.get('position')
         rotation = data.get('rotation', 0)
-        self.game_state.update_player_position(player_id, position, rotation)
         
-        # Check which chunks the player needs
-        current_chunks = self.game_state.get_nearby_chunks(player_id)
+        # Update game state
+        self.game_state.update_player_position(client.player_id, position, rotation)
         
-        # Only send new chunks that weren't previously active
+        # Get nearby chunks
+        current_chunks = self.game_state.get_nearby_chunks(client.player_id)
+        
+        # Only send new chunks that weren't previously sent
         new_chunks = {}
-        if player_id in self.game_state.players:
-            player = self.game_state.players[player_id]
-            sent_chunks = player.get('sent_chunks', set())
-            
-            for key, chunk in current_chunks.items():
-                if key not in sent_chunks:
-                    new_chunks[key] = chunk
-            
-            # Update sent chunks tracking
-            if 'sent_chunks' not in player:
-                player['sent_chunks'] = set()
-            player['sent_chunks'].update(new_chunks.keys())
+        for key, chunk in current_chunks.items():
+            if key not in client.sent_chunks:
+                new_chunks[key] = chunk
+        
+        # Update sent chunks tracking
+        client.sent_chunks.update(new_chunks.keys())
         
         # Send chunks in small batches if there are many
-        try:
-            if new_chunks:
-                chunk_keys = list(new_chunks.keys())
-                for i in range(0, len(chunk_keys), 3):  # Send 3 chunks at a time
-                    # Skip if disconnected during sending
-                    if websocket in self.disconnected_websockets:
-                        break
-                        
-                    batch = {k: new_chunks[k] for k in chunk_keys[i:i+3] if k in new_chunks}
-                    await self.send_to_client(websocket, {
-                        'type': 'chunks_update',
-                        'data': {'chunks': batch}
-                    })
-                    if i + 3 < len(chunk_keys):
-                        await asyncio.sleep(0.05)  # Small delay between batches
-            
-            # Skip broadcasting if disconnected
-            if websocket in self.disconnected_websockets:
-                return
+        if new_chunks:
+            chunk_keys = list(new_chunks.keys())
+            for i in range(0, len(chunk_keys), 3):  # Send 3 chunks at a time
+                batch = {k: new_chunks[k] for k in chunk_keys[i:i+3] if k in new_chunks}
+                success = await client.send_message({
+                    'type': 'chunks_update',
+                    'data': {'chunks': batch}
+                })
                 
-            # Broadcast position update to other players
-            await self.broadcast({
-                'type': 'position',
-                'data': {
-                    'player_id': player_id,
-                    'position': position,
-                    'rotation': rotation,
-                    'name': self.game_state.players[player_id]['name']
-                }
-            }, exclude_player=player_id)
-            
-        except Exception as e:
-            print(f"Error in update_player for {player_id}: {e}")
-            await self.disconnect(websocket)
+                if not success:
+                    break  # Stop if send failed
+                
+                if i + 3 < len(chunk_keys):
+                    await asyncio.sleep(0.05)  # Small delay between batches
+        
+        # Broadcast position update to other players
+        await self.broadcast({
+            'type': 'position',
+            'data': {
+                'player_id': client.player_id,
+                'position': position,
+                'rotation': rotation,
+                'name': client.name
+            }
+        }, exclude=client.player_id)
 
-    async def keepalive(self):
-        """Send periodic keepalive messages to maintain connections"""
+    async def handle_client(self, websocket: WebSocket):
+        """Main handler for client connection"""
+        client = await self.connect(websocket)
+        
+        try:
+            while client.active:
+                try:
+                    # Wait for a message with a long timeout
+                    # This allows us to catch disconnection on most platforms
+                    data = await asyncio.wait_for(websocket.receive(), timeout=60.0)
+                    
+                    # Update activity timestamp
+                    client.last_activity = time.time()
+                    self.game_state.messages_received += 1
+                    
+                    # Parse the message
+                    message_data = None
+                    try:
+                        if "text" in data:
+                            message_data = json.loads(data["text"])
+                        elif "bytes" in data:
+                            # Decompress binary messages
+                            decompressed = zlib.decompress(data["bytes"])
+                            message_data = json.loads(decompressed.decode())
+                    except json.JSONDecodeError:
+                        print(f"Error decoding message from {client.player_id}")
+                        continue
+                        
+                    if not message_data:
+                        continue
+                    
+                    # Check rate limiting
+                    if not client.check_rate_limit():
+                        await client.send_message({
+                            'type': 'warning',
+                            'data': {'message': 'Rate limit exceeded. Please slow down requests.'}
+                        })
+                        continue
+                    
+                    # Handle different message types
+                    if message_data['type'] == 'position':
+                        await self.update_player(client, message_data['data'])
+                    elif message_data['type'] == 'ping':
+                        await client.send_message({
+                            'type': 'pong',
+                            'data': {'server_time': time.time()}
+                        })
+                
+                except asyncio.TimeoutError:
+                    # This is normal, just means no message received within timeout
+                    continue
+                    
+                except WebSocketDisconnect:
+                    # Client disconnected
+                    print(f"WebSocket disconnected: {client.player_id}")
+                    break
+                    
+                except Exception as e:
+                    # Something went wrong
+                    print(f"Error handling client {client.player_id}: {e}")
+                    if "disconnect" in str(e).lower() or "closed" in str(e).lower():
+                        break
+        
+        finally:
+            # Ensure client is cleaned up
+            await self.disconnect(client)
+
+    async def update_time_task(self):
+        """Background task to update time of day"""
         while True:
-            await asyncio.sleep(15)  # Check every 15 seconds
+            try:
+                # Update time of day
+                self.game_state.time_of_day = (self.game_state.time_of_day + 1 / (self.game_state.DAY_NIGHT_CYCLE * 10)) % 1
+                
+                # Only broadcast time updates every second
+                if int(self.game_state.time_of_day * self.game_state.DAY_NIGHT_CYCLE) % 10 == 0:
+                    await self.broadcast({
+                        'type': 'time_update',
+                        'data': {'time_of_day': self.game_state.time_of_day}
+                    })
+                
+                await asyncio.sleep(0.1)
+            except Exception as e:
+                print(f"Error in update_time_task: {e}")
+                await asyncio.sleep(1)  # Back off on error
+
+    async def cleanup_inactive_players_task(self):
+        """Background task to remove inactive players"""
+        while True:
+            try:
+                current_time = time.time()
+                inactive_clients = []
+                
+                # Identify inactive clients
+                for player_id, client in list(self.connections.items()):
+                    if current_time - client.last_activity > 120:  # 2 minutes
+                        inactive_clients.append(client)
+                
+                # Disconnect inactive clients
+                for client in inactive_clients:
+                    print(f"Removing inactive client: {client.player_id} ({client.name})")
+                    await self.disconnect(client)
+                    
+                await asyncio.sleep(30)  # Check every 30 seconds
+            except Exception as e:
+                print(f"Error in cleanup_inactive_players_task: {e}")
+                await asyncio.sleep(30)
+
+    async def keepalive_task(self):
+        """Background task to send keepalive pings"""
+        while True:
             try:
                 current_time = time.time()
                 
-                # Make a copy to avoid concurrent modification issues
-                connections_to_check = list(self.active_connections.items())
-                
-                # Only ping clients that haven't sent a message recently
-                for player_id, websocket in connections_to_check:
-                    # Skip if already disconnected
-                    if websocket in self.disconnected_websockets:
-                        continue
-                        
-                    last_time = self.last_message_time.get(player_id, 0)
-                    if current_time - last_time > 10:
+                # Send pings to clients that haven't sent messages recently
+                for player_id, client in list(self.connections.items()):
+                    if current_time - client.last_activity > 10 and client.active:
                         try:
-                            # Send a ping to keep the connection alive
-                            await self.send_to_client(websocket, {
+                            await client.send_message({
                                 'type': 'ping',
                                 'data': {'server_time': current_time}
                             })
                         except Exception as e:
-                            print(f"Error in keepalive for player {player_id}: {e}")
-                            # Disconnect will be handled by send_to_client
-            except Exception as e:
-                print(f"Error in keepalive: {e}")
+                            print(f"Error sending keepalive to {player_id}: {e}")
+                            client.active = False
                 
-    def check_rate_limit(self, player_id: str) -> bool:
-        """Check if a player is sending too many messages"""
-        current_time = time.time()
-        
-        if player_id not in self.rate_limits:
-            self.rate_limits[player_id] = {"count": 1, "first_request": current_time}
-            return True
-            
-        rate_data = self.rate_limits[player_id]
-        
-        # Reset counter if more than 1 second has passed
-        if current_time - rate_data["first_request"] > 1.0:
-            rate_data["count"] = 1
-            rate_data["first_request"] = current_time
-            return True
-            
-        # Increment counter
-        rate_data["count"] += 1
-        
-        # Check if limit exceeded
-        if rate_data["count"] > self.MAX_MESSAGES_PER_SECOND:
-            print(f"Rate limit exceeded for player {player_id}: {rate_data['count']} messages/second")
-            return False
-            
-        return True
+                await asyncio.sleep(15)  # Send keepalives every 15 seconds
+            except Exception as e:
+                print(f"Error in keepalive_task: {e}")
+                await asyncio.sleep(15)
 
 manager = ConnectionManager()
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    await manager.connect(websocket)
-    
-    # Process messages in a loop
-    while websocket not in manager.disconnected_websockets:
-        try:
-            # Wait for a message from the client
-            data = await websocket.receive()
-            
-            # Get player ID from the connection
-            if websocket not in manager.player_ids:
-                print("Received message from unregistered websocket")
-                continue
-                
-            player_id = manager.player_ids[websocket]
-            
-            # Update last message time
-            if player_id in manager.last_message_time:
-                manager.last_message_time[player_id] = time.time()
-                manager.game_state.messages_received += 1
-            
-            # Handle both text and binary messages
-            message_data = None
-            try:
-                if "text" in data:
-                    message_data = json.loads(data["text"])
-                elif "bytes" in data:
-                    # Decompress binary messages
-                    decompressed = zlib.decompress(data["bytes"])
-                    message_data = json.loads(decompressed.decode())
-            except json.JSONDecodeError:
-                print("Error decoding JSON message")
-                continue
-                
-            if not message_data:
-                continue
-                
-            # Check rate limiting
-            if not manager.check_rate_limit(player_id):
-                # Send warning message
-                await manager.send_to_client(websocket, {
-                    'type': 'warning',
-                    'data': {'message': 'Rate limit exceeded. Please slow down requests.'}
-                })
-                continue
-            
-            # Process messages based on type
-            if message_data['type'] == 'position':
-                await manager.update_player(websocket, player_id, message_data['data'])
-            elif message_data['type'] == 'ping':
-                # Respond to client pings
-                await manager.send_to_client(websocket, {
-                    'type': 'pong',
-                    'data': {'server_time': time.time()}
-                })
-                
-        except WebSocketDisconnect:
-            print(f"WebSocket disconnect detected for player {manager.player_ids.get(websocket, 'unknown')}")
-            break
-                
-        except Exception as e:
-            print(f"Error processing message: {str(e)}")
-            # Continue the loop unless it's a fatal error
-            if str(e) == "Cannot call 'receive' once a disconnect message has been received.":
-                break
-    
-    # Clean up on disconnect
-    await manager.disconnect(websocket)
+    """Main WebSocket endpoint - handles each client connection"""
+    await manager.handle_client(websocket)
 
 @app.get("/server-stats")
 async def get_server_stats():
