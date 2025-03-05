@@ -172,6 +172,7 @@ class GameState:
                     print(f"Generated chunk: {chunk_key}")
         self.players[player_id]['active_chunks'] = new_active_chunks
         return chunks
+    # e
 
     async def update_time(self, manager):
         while True:
