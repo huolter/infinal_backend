@@ -226,7 +226,7 @@ class NPC:
                     'x': math.cos(self.rotation) * self.speed,
                     'z': math.sin(self.rotation) * self.speed
                 }
-    
+    #jaja
     def hit(self):
         self.scale_factor = max(self.scale_factor * 0.9, 0.1)
 
