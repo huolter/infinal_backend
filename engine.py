@@ -56,23 +56,31 @@ class Entity:
         # Set a long travel path
         self.path_length = random.uniform(500, 1000)  # How far the entity will travel
         self.distance_traveled = 0  # Track how far it has gone
-        
+
+        # --- Smoothing-related additions ---
+        self.target_position = position.copy()  # Target position for smooth movement
+        self.smoothing_factor = 0.1  # Controls the smoothness (smaller = smoother)
+
     def update(self, dt):
-        """Update entity position based on velocity"""
-        # Calculate distance moved this frame
+        """Update entity position based on velocity, with smoothing."""
+        # 1. Calculate target position (where the entity *should* be)
+        self.target_position['x'] += self.velocity['x'] * dt
+        self.target_position['y'] += self.velocity['y'] * dt
+        self.target_position['z'] += self.velocity['z'] * dt
+
+        # 2. Calculate distance moved this frame (based on *target* position)
+        #   This ensures distance_traveled remains accurate even with smoothing.
         distance_this_frame = math.sqrt(
             (self.velocity['x'] * dt) ** 2 +
             (self.velocity['z'] * dt) ** 2
         )
-        
-        # Update position
-        self.position['x'] += self.velocity['x'] * dt
-        self.position['y'] += self.velocity['y'] * dt
-        self.position['z'] += self.velocity['z'] * dt
-        
-        # Track total distance traveled
         self.distance_traveled += distance_this_frame
-        
+
+        # 3. Smoothly interpolate towards the target position.
+        self.position['x'] += (self.target_position['x'] - self.position['x']) * self.smoothing_factor
+        self.position['y'] += (self.target_position['y'] - self.position['y']) * self.smoothing_factor
+        self.position['z'] += (self.target_position['z'] - self.position['z']) * self.smoothing_factor
+
         # Update last update time
         self.last_update = time.time()
         
