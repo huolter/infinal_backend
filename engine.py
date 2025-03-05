@@ -21,6 +21,30 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+class GameState:
+    def __init__(self, num_npcs: int = 20):
+        self.players: Dict[str, Dict] = {}
+        self.npcs: Dict[str, NPC] = {}
+        self.bullets = {}
+        self.chunk_generator = ChunkGenerator()
+        self.VIEW_DISTANCE = 3
+        self.time_of_day = 0
+        self.DAY_NIGHT_CYCLE = 180
+        self.last_activity = {}
+        self.connections_total = 0
+        self.connections_active = 0
+        self.messages_received = 0
+        self.messages_sent = 0
+        self.weather_probabilities = {
+            'stone_rain': 0.2,
+            'lightning': 0.3,
+            'mist': 0.5
+        }
+        self.current_weather = None
+        self.init_npcs(num_npcs)
+
+
+
 class LRUCache(OrderedDict):
     def __init__(self, maxsize=1000):
         self.maxsize = maxsize
@@ -452,6 +476,7 @@ class ConnectionManager:
         self.start_background_task(self.keepalive_task())
         self.start_background_task(self.update_npcs_task())
         self.start_background_task(self.update_bullets_task())
+        self.start_background_task(self.update_weather_task())
 
     def start_background_task(self, coroutine):
         task = asyncio.create_task(coroutine)
@@ -485,7 +510,8 @@ class ConnectionManager:
                 'chunks': chunks,
                 'players': players_data,
                 'npcs': self.game_state.get_npcs_data(),
-                'time_of_day': self.game_state.time_of_day
+                'time_of_day': self.game_state.time_of_day,
+                'current_weather': self.game_state.current_weather  # Include current weather
             }
         })
 
@@ -500,6 +526,42 @@ class ConnectionManager:
         }, exclude=client.player_id)
 
         return client
+
+    async def update_weather_task(self):
+        while True:
+            try:
+                if self.game_state.current_weather is None:
+                    if random.random() < 0.1:  # 10% chance every 10 seconds
+                        weather_type = random.choices(
+                            list(self.game_state.weather_probabilities.keys()),
+                            weights=list(self.game_state.weather_probabilities.values())
+                        )[0]
+                        intensity = random.uniform(0.1, 1.0)
+                        duration = random.uniform(30, 120)
+                        self.game_state.current_weather = {
+                            'type': weather_type,
+                            'intensity': intensity,
+                            'duration': duration,
+                            'start_time': time.time()
+                        }
+                        await self.broadcast({
+                            'type': 'weather_start',
+                            'data': {
+                                'type': weather_type,
+                                'intensity': intensity,
+                                'duration': duration
+                            }
+                        })
+                else:
+                    if time.time() - self.game_state.current_weather['start_time'] > self.game_state.current_weather['duration']:
+                        self.game_state.current_weather = None
+                        await self.broadcast({
+                            'type': 'weather_end'
+                        })
+                await asyncio.sleep(10)  # Check every 10 seconds
+            except Exception as e:
+                print(f"Error in update_weather_task: {e}")
+                await asyncio.sleep(10)
 
     async def disconnect(self, client: ClientConnection):
         if client.player_id in self.connections:
@@ -720,11 +782,16 @@ async def get_server_stats():
 async def set_npcs_count(count: int):
     if count < 0 or count > 100:
         return {"error": "NPC count must be between 0 and 100"}
-    
     manager.game_state.npcs.clear()
     manager.game_state.init_npcs(count)
-    
     return {"message": f"NPC count set to {count}", "npcs": len(manager.game_state.npcs)}
+
+@app.post("/set-weather-probabilities")
+async def set_weather_probabilities(probabilities: Dict[str, float]):
+    for weather_type, prob in probabilities.items():
+        if weather_type in manager.game_state.weather_probabilities:
+            manager.game_state.weather_probabilities[weather_type] = max(0.0, min(1.0, prob))
+    return {"message": "Weather probabilities updated", "current_probabilities": manager.game_state.weather_probabilities}
 
 if __name__ == "__main__":
     import uvicorn
