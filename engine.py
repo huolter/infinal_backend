@@ -104,6 +104,26 @@ class ChunkGenerator:
         self.chunks[chunk_key] = chunk
         return chunk
 
+    def get_height(self, x: float, z: float) -> float:
+        chunk_x = math.floor(x / 16)
+        chunk_z = math.floor(z / 16)
+        local_x = x - chunk_x * 16
+        local_z = z - chunk_z * 16
+        chunk = self.generate_chunk(chunk_x, chunk_z)
+        x0 = math.floor(local_x)
+        z0 = math.floor(local_z)
+        x1 = min(x0 + 1, 15)
+        z1 = min(z0 + 1, 15)
+        h00 = chunk['terrain'][z0][x0]
+        h10 = chunk['terrain'][z1][x0]
+        h01 = chunk['terrain'][z0][x1]
+        h11 = chunk['terrain'][z1][x1]
+        tx = local_x - x0
+        tz = local_z - z0
+        h0 = h00 * (1 - tx) + h01 * tx
+        h1 = h10 * (1 - tx) + h11 * tx
+        return h0 * (1 - tz) + h1 * tz
+
     def get_feature_type(self, x: float, z: float, biome: str) -> Dict:
         random.seed(int(x * 1000 + z * 1000 + self.seed))
         feature_value = random.random()
@@ -171,7 +191,7 @@ class NPC:
         self.name = self.generate_name()
         self.position = {
             'x': random.uniform(-100, 100),
-            'y': random.uniform(0, 0),
+            'y': 0, // Will be set by GameState using terrain height
             'z': random.uniform(-100, 100)
         }
         self.rotation = random.uniform(0, 2 * math.pi)
@@ -240,17 +260,23 @@ class GameState:
         for i in range(num_npcs):
             npc_id = f"npc_{i}"
             self.npcs[npc_id] = NPC(npc_id)
+            x = self.npcs[npc_id].position['x']
+            z = self.npcs[npc_id].position['z']
+            y = self.chunk_generator.get_height(x, z)
+            self.npcs[npc_id].position['y'] = y
             
     def update_npcs(self):
         for npc in self.npcs.values():
             npc.update_position()
+            npc.position['y'] = self.chunk_generator.get_height(npc.position['x'], npc.position['z'])
             
     def get_npcs_data(self) -> Dict[str, Dict]:
         return {npc_id: npc.get_data() for npc_id, npc in self.npcs.items()}
 
     def add_player(self, player_id: str, name: str = "Unnamed", position: Dict = None):
         if position is None:
-            position = {'x': 0, 'y': 1.7, 'z': 0}  # Default y matches client camera height
+            position = {'x': 0, 'y': 1.7, 'z': 0}
+            position['y'] = self.chunk_generator.get_height(position['x'], position['z'])
         self.players[player_id] = {
             'position': position,
             'rotation': 0,
@@ -272,13 +298,10 @@ class GameState:
 
     def update_player_position(self, player_id: str, position: Dict, rotation: float):
         if player_id in self.players:
-            # Clamp y to be >= 0
-            clamped_y = max(position['y'], 0)
-            self.players[player_id]['position'] = {
-                'x': position['x'],
-                'y': clamped_y,
-                'z': position['z']
-            }
+            terrain_height = self.chunk_generator.get_height(position['x'], position['z'])
+            if position['y'] < terrain_height:
+                position['y'] = terrain_height
+            self.players[player_id]['position'] = position
             self.players[player_id]['rotation'] = rotation
             self.last_activity[player_id] = time.time()
 
