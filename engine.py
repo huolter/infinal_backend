@@ -191,7 +191,7 @@ class NPC:
         self.name = self.generate_name()
         self.position = {
             'x': random.uniform(-100, 100),
-            'y': 0, // Will be set by GameState using terrain height
+            'y': 0, # Will be set by GameState using terrain height
             'z': random.uniform(-100, 100)
         }
         self.rotation = random.uniform(0, 2 * math.pi)
