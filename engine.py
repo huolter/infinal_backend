@@ -177,7 +177,7 @@ class NPC:
         self.rotation = random.uniform(0, 2 * math.pi)
         self.size = random.uniform(1, 5)
         self.scale_factor = 1.0  # Track current scale relative to original size
-        self.speed = random.uniform(0.1, 1)
+        self.speed = random.uniform(0.05, 0.5)
         self.direction = {
             'x': math.cos(self.rotation) * self.speed,
             'z': math.sin(self.rotation) * self.speed
