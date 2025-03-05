@@ -171,7 +171,7 @@ class NPC:
         self.name = self.generate_name()
         self.position = {
             'x': random.uniform(-100, 100),
-            'y': random.uniform(0, 10),
+            'y': random.uniform(0, 0),
             'z': random.uniform(-100, 100)
         }
         self.rotation = random.uniform(0, 2 * math.pi)
