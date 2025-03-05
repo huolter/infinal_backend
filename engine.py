@@ -404,9 +404,9 @@ class ChunkGenerator:
         self.last_giant_spawn = time.time() - 90  # Even longer initial delay for giants
         
         # Count of active special entities
-        self.horizon_travelers_active = 0
-        self.sky_travelers_active = 0
-        self.giants_active = 0
+        self.horizon_travelers_active = 2
+        self.sky_travelers_active = 2
+        self.giants_active = 2
         
         # Maximum number of each type to have active at once
         self.MAX_HORIZON_TRAVELERS = 10
