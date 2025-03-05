@@ -43,6 +43,134 @@ class GameState:
         self.current_weather = None
         self.init_npcs(num_npcs)
 
+    def init_npcs(self, num_npcs: int):
+        for i in range(num_npcs):
+            npc_id = f"npc_{i}"
+            self.npcs[npc_id] = NPC(npc_id)
+            x = self.npcs[npc_id].position['x']
+            z = self.npcs[npc_id].position['z']
+            y = self.chunk_generator.get_height(x, z)
+            self.npcs[npc_id].position['y'] = y
+
+    def update_npcs(self):
+        for npc in self.npcs.values():
+            npc.update_position()
+            npc.position['y'] = self.chunk_generator.get_height(npc.position['x'], npc.position['z'])
+
+    def get_npcs_data(self) -> Dict[str, Dict]:
+        return {npc_id: npc.get_data() for npc_id, npc in self.npcs.items()}
+
+    def add_player(self, player_id: str, name: str = "Unnamed", position: Dict = None):
+        if position is None:
+            position = {'x': 0, 'y': 1.7, 'z': 0}
+            position['y'] = self.chunk_generator.get_height(position['x'], position['z'])
+        self.players[player_id] = {
+            'position': position,
+            'rotation': 0,
+            'active_chunks': set(),
+            'name': name,
+            'joined_at': time.time(),
+            'scale_factor': 1.0
+        }
+        self.last_activity[player_id] = time.time()
+        self.connections_total += 1
+        self.connections_active += 1
+
+    def remove_player(self, player_id: str):
+        if player_id in self.players:
+            del self.players[player_id]
+        if player_id in self.last_activity:
+            del self.last_activity[player_id]
+        self.connections_active -= 1
+
+    def update_player_position(self, player_id: str, position: Dict, rotation: float):
+        if player_id in self.players:
+            terrain_height = self.chunk_generator.get_height(position['x'], position['z'])
+            if position['y'] < terrain_height:
+                position['y'] = terrain_height
+            self.players[player_id]['position'] = position
+            self.players[player_id]['rotation'] = rotation
+            self.last_activity[player_id] = time.time()
+
+    def add_bullet(self, bullet_id: str, position: Dict, direction: Dict, shooter_id: str):
+        self.bullets[bullet_id] = {
+            'position': position,
+            'direction': direction,
+            'shooter_id': shooter_id,
+            'lifetime': 3.0
+        }
+
+    def update_bullets(self, delta_time: float):
+        expired = []
+        for bullet_id, bullet in list(self.bullets.items()):
+            bullet['position']['x'] += bullet['direction']['x'] * 0.5
+            bullet['position']['y'] += bullet['direction']['y'] * 0.5
+            bullet['position']['z'] += bullet['direction']['z'] * 0.5
+            bullet['lifetime'] -= delta_time
+
+            for pid, player in self.players.items():
+                if pid != bullet['shooter_id']:
+                    dist = math.sqrt(
+                        (player['position']['x'] - bullet['position']['x'])**2 +
+                        (player['position']['z'] - bullet['position']['z'])**2
+                    )
+                    if dist < 1:
+                        expired.append(bullet_id)
+                        player['scale_factor'] = max(player['scale_factor'] * 0.9, 0.1)
+                        return {'type': 'player', 'id': pid}
+
+            for nid, npc in self.npcs.items():
+                dist = math.sqrt(
+                    (npc.position['x'] - bullet['position']['x'])**2 +
+                    (npc.position['z'] - bullet['position']['z'])**2
+                )
+                if dist < npc.size * npc.scale_factor:
+                    expired.append(bullet_id)
+                    npc.hit()
+                    return {'type': 'npc', 'id': nid}
+
+            if bullet['lifetime'] <= 0:
+                expired.append(bullet_id)
+
+        for bullet_id in expired:
+            del self.bullets[bullet_id]
+        return None
+
+    def get_nearby_chunks(self, player_id: str) -> Dict[str, Dict]:
+        if player_id not in self.players:
+            return {}
+        pos = self.players[player_id]['position']
+        chunk_x = math.floor(pos['x'] / 16)
+        chunk_z = math.floor(pos['z'] / 16)
+
+        chunks = {}
+        new_active_chunks = set()
+
+        for dx in range(-self.VIEW_DISTANCE, self.VIEW_DISTANCE + 1):
+            for dz in range(-self.VIEW_DISTANCE, self.VIEW_DISTANCE + 1):
+                cx = chunk_x + dx
+                cz = chunk_z + dz
+                if dx*dx + dz*dz > self.VIEW_DISTANCE*self.VIEW_DISTANCE:
+                    continue
+                chunk_key = f"{cx},{cz}"
+                new_active_chunks.add(chunk_key)
+                if chunk_key not in self.players[player_id].get('active_chunks', set()):
+                    chunks[chunk_key] = self.chunk_generator.generate_chunk(cx, cz)
+
+        self.players[player_id]['active_chunks'] = new_active_chunks
+        return chunks
+
+    def get_stats(self) -> Dict:
+        return {
+            "players_total": self.connections_total,
+            "players_active": self.connections_active,
+            "messages_received": self.messages_received,
+            "messages_sent": self.messages_sent,
+            "chunks": self.chunk_generator.get_stats(),
+            "time_of_day": self.time_of_day,
+            "npcs_count": len(self.npcs),
+            "bullets_count": len(self.bullets)
+        }
 
 
 class LRUCache(OrderedDict):
@@ -263,151 +391,7 @@ class NPC:
             'size': self.size * self.scale_factor
         }
 
-class GameState:
-    def __init__(self, num_npcs: int = 20):
-        self.players: Dict[str, Dict] = {}
-        self.npcs: Dict[str, NPC] = {}
-        self.bullets = {}
-        self.chunk_generator = ChunkGenerator()
-        self.VIEW_DISTANCE = 3
-        self.time_of_day = 0
-        self.DAY_NIGHT_CYCLE = 180
-        self.last_activity = {}
-        self.connections_total = 0
-        self.connections_active = 0
-        self.messages_received = 0
-        self.messages_sent = 0
-        
-        self.init_npcs(num_npcs)
-        
-    def init_npcs(self, num_npcs: int):
-        for i in range(num_npcs):
-            npc_id = f"npc_{i}"
-            self.npcs[npc_id] = NPC(npc_id)
-            x = self.npcs[npc_id].position['x']
-            z = self.npcs[npc_id].position['z']
-            y = self.chunk_generator.get_height(x, z)
-            self.npcs[npc_id].position['y'] = y
-            
-    def update_npcs(self):
-        for npc in self.npcs.values():
-            npc.update_position()
-            npc.position['y'] = self.chunk_generator.get_height(npc.position['x'], npc.position['z'])
-            
-    def get_npcs_data(self) -> Dict[str, Dict]:
-        return {npc_id: npc.get_data() for npc_id, npc in self.npcs.items()}
 
-    def add_player(self, player_id: str, name: str = "Unnamed", position: Dict = None):
-        if position is None:
-            position = {'x': 0, 'y': 1.7, 'z': 0}
-            position['y'] = self.chunk_generator.get_height(position['x'], position['z'])
-        self.players[player_id] = {
-            'position': position,
-            'rotation': 0,
-            'active_chunks': set(),
-            'name': name,
-            'joined_at': time.time(),
-            'scale_factor': 1.0
-        }
-        self.last_activity[player_id] = time.time()
-        self.connections_total += 1
-        self.connections_active += 1
-
-    def remove_player(self, player_id: str):
-        if player_id in self.players:
-            del self.players[player_id]
-        if player_id in self.last_activity:
-            del self.last_activity[player_id]
-        self.connections_active -= 1
-
-    def update_player_position(self, player_id: str, position: Dict, rotation: float):
-        if player_id in self.players:
-            terrain_height = self.chunk_generator.get_height(position['x'], position['z'])
-            if position['y'] < terrain_height:
-                position['y'] = terrain_height
-            self.players[player_id]['position'] = position
-            self.players[player_id]['rotation'] = rotation
-            self.last_activity[player_id] = time.time()
-
-    def add_bullet(self, bullet_id: str, position: Dict, direction: Dict, shooter_id: str):
-        self.bullets[bullet_id] = {
-            'position': position,
-            'direction': direction,
-            'shooter_id': shooter_id,
-            'lifetime': 3.0
-        }
-
-    def update_bullets(self, delta_time: float):
-        expired = []
-        for bullet_id, bullet in list(self.bullets.items()):
-            bullet['position']['x'] += bullet['direction']['x'] * 0.5
-            bullet['position']['y'] += bullet['direction']['y'] * 0.5
-            bullet['position']['z'] += bullet['direction']['z'] * 0.5
-            bullet['lifetime'] -= delta_time
-
-            for pid, player in self.players.items():
-                if pid != bullet['shooter_id']:
-                    dist = math.sqrt(
-                        (player['position']['x'] - bullet['position']['x'])**2 +
-                        (player['position']['z'] - bullet['position']['z'])**2
-                    )
-                    if dist < 1:
-                        expired.append(bullet_id)
-                        player['scale_factor'] = max(player['scale_factor'] * 0.9, 0.1)
-                        return {'type': 'player', 'id': pid}
-
-            for nid, npc in self.npcs.items():
-                dist = math.sqrt(
-                    (npc.position['x'] - bullet['position']['x'])**2 +
-                    (npc.position['z'] - bullet['position']['z'])**2
-                )
-                if dist < npc.size * npc.scale_factor:
-                    expired.append(bullet_id)
-                    npc.hit()
-                    return {'type': 'npc', 'id': nid}
-
-            if bullet['lifetime'] <= 0:
-                expired.append(bullet_id)
-
-        for bullet_id in expired:
-            del self.bullets[bullet_id]
-        return None
-
-    def get_nearby_chunks(self, player_id: str) -> Dict[str, Dict]:
-        if player_id not in self.players:
-            return {}
-        pos = self.players[player_id]['position']
-        chunk_x = math.floor(pos['x'] / 16)
-        chunk_z = math.floor(pos['z'] / 16)
-
-        chunks = {}
-        new_active_chunks = set()
-
-        for dx in range(-self.VIEW_DISTANCE, self.VIEW_DISTANCE + 1):
-            for dz in range(-self.VIEW_DISTANCE, self.VIEW_DISTANCE + 1):
-                cx = chunk_x + dx
-                cz = chunk_z + dz
-                if dx*dx + dz*dz > self.VIEW_DISTANCE*self.VIEW_DISTANCE:
-                    continue
-                chunk_key = f"{cx},{cz}"
-                new_active_chunks.add(chunk_key)
-                if chunk_key not in self.players[player_id].get('active_chunks', set()):
-                    chunks[chunk_key] = self.chunk_generator.generate_chunk(cx, cz)
-
-        self.players[player_id]['active_chunks'] = new_active_chunks
-        return chunks
-
-    def get_stats(self) -> Dict:
-        return {
-            "players_total": self.connections_total,
-            "players_active": self.connections_active,
-            "messages_received": self.messages_received,
-            "messages_sent": self.messages_sent,
-            "chunks": self.chunk_generator.get_stats(),
-            "time_of_day": self.time_of_day,
-            "npcs_count": len(self.npcs),
-            "bullets_count": len(self.bullets)
-        }
 
 class ClientConnection:
     def __init__(self, websocket: WebSocket, manager):
