@@ -174,40 +174,33 @@ class NPC:
         self.name = self.generate_name()
         self.position = {
             'x': random.uniform(-100, 100),
-            'y': random.uniform(0, 10),  # Elevated position
+            'y': random.uniform(0, 10),
             'z': random.uniform(-100, 100)
         }
         self.rotation = random.uniform(0, 2 * math.pi)
-        self.size = random.uniform(1, 25)  # Giant size (3x to 5x normal)
-        self.speed = random.uniform(0.02, 0.1)  # Units per update
+        self.size = random.uniform(1, 25)
+        self.speed = random.uniform(0.02, 0.1)
         self.direction = {
             'x': math.cos(self.rotation) * self.speed,
             'z': math.sin(self.rotation) * self.speed
         }
         
     def generate_name(self) -> str:
-        """Generate a random name for the NPC"""
         first = random.choice(self.FIRST_NAMES)
-        #second = random.choice(self.SECOND_NAMES)
         number = random.randint(1, 99)
         return f"{first}_{number}"
     
     def update_position(self):
-        """Update the NPC's position based on its direction and speed"""
         self.position['x'] += self.direction['x']
         self.position['z'] += self.direction['z']
         
-        # Check if we need to change direction (random chance or world boundary)
         if random.random() < 0.005 or abs(self.position['x']) > 500 or abs(self.position['z']) > 500:
-            # Change direction
             new_rotation = random.uniform(0, 2 * math.pi)
             self.rotation = new_rotation
             self.direction = {
                 'x': math.cos(self.rotation) * self.speed,
                 'z': math.sin(self.rotation) * self.speed
             }
-            
-            # If out of bounds, move back toward center
             if abs(self.position['x']) > 500 or abs(self.position['z']) > 500:
                 angle_to_center = math.atan2(-self.position['z'], -self.position['x'])
                 self.rotation = angle_to_center
@@ -216,8 +209,11 @@ class NPC:
                     'z': math.sin(self.rotation) * self.speed
                 }
     
+    def hit(self):
+        """Handle NPC being hit"""
+        pass  # Could add health or other effects here if desired
+
     def get_data(self) -> Dict:
-        """Get the NPC data to send to clients"""
         return {
             'id': self.id,
             'name': self.name,
@@ -231,6 +227,7 @@ class GameState:
     def __init__(self, num_npcs: int = 20):
         self.players: Dict[str, Dict] = {}
         self.npcs: Dict[str, NPC] = {}
+        self.bullets = {}  # Track bullets server-side
         self.chunk_generator = ChunkGenerator()
         self.VIEW_DISTANCE = 3
         self.time_of_day = 0
@@ -241,22 +238,18 @@ class GameState:
         self.messages_received = 0
         self.messages_sent = 0
         
-        # Initialize NPCs
         self.init_npcs(num_npcs)
         
     def init_npcs(self, num_npcs: int):
-        """Initialize NPCs in the game world"""
         for i in range(num_npcs):
             npc_id = f"npc_{i}"
             self.npcs[npc_id] = NPC(npc_id)
             
     def update_npcs(self):
-        """Update all NPCs' positions"""
         for npc in self.npcs.values():
             npc.update_position()
             
     def get_npcs_data(self) -> Dict[str, Dict]:
-        """Get data for all NPCs to send to clients"""
         return {npc_id: npc.get_data() for npc_id, npc in self.npcs.items()}
 
     def add_player(self, player_id: str, name: str = "Unnamed", position: Dict = None):
@@ -285,6 +278,49 @@ class GameState:
             self.players[player_id]['position'] = position
             self.players[player_id]['rotation'] = rotation
             self.last_activity[player_id] = time.time()
+
+    def add_bullet(self, bullet_id: str, position: Dict, direction: Dict, shooter_id: str):
+        self.bullets[bullet_id] = {
+            'position': position,
+            'direction': direction,
+            'shooter_id': shooter_id,
+            'lifetime': 3.0  # 3 seconds
+        }
+
+    def update_bullets(self, delta_time: float):
+        expired = []
+        for bullet_id, bullet in list(self.bullets.items()):
+            bullet['position']['x'] += bullet['direction']['x'] * 0.5
+            bullet['position']['y'] += bullet['direction']['y'] * 0.5
+            bullet['position']['z'] += bullet['direction']['z'] * 0.5
+            bullet['lifetime'] -= delta_time
+
+            for pid, player in self.players.items():
+                if pid != bullet['shooter_id']:
+                    dist = math.sqrt(
+                        (player['position']['x'] - bullet['position']['x'])**2 +
+                        (player['position']['z'] - bullet['position']['z'])**2
+                    )
+                    if dist < 1:
+                        expired.append(bullet_id)
+                        return {'type': 'player', 'id': pid}
+
+            for nid, npc in self.npcs.items():
+                dist = math.sqrt(
+                    (npc.position['x'] - bullet['position']['x'])**2 +
+                    (npc.position['z'] - bullet['position']['z'])**2
+                )
+                if dist < npc.size:
+                    expired.append(bullet_id)
+                    npc.hit()
+                    return {'type': 'npc', 'id': nid}
+
+            if bullet['lifetime'] <= 0:
+                expired.append(bullet_id)
+
+        for bullet_id in expired:
+            del self.bullets[bullet_id]
+        return None
 
     def get_nearby_chunks(self, player_id: str) -> Dict[str, Dict]:
         if player_id not in self.players:
@@ -318,7 +354,8 @@ class GameState:
             "messages_sent": self.messages_sent,
             "chunks": self.chunk_generator.get_stats(),
             "time_of_day": self.time_of_day,
-            "npcs_count": len(self.npcs)
+            "npcs_count": len(self.npcs),
+            "bullets_count": len(self.bullets)
         }
 
 class ClientConnection:
@@ -389,6 +426,7 @@ class ConnectionManager:
         self.start_background_task(self.cleanup_inactive_players_task())
         self.start_background_task(self.keepalive_task())
         self.start_background_task(self.update_npcs_task())
+        self.start_background_task(self.update_bullets_task())
 
     def start_background_task(self, coroutine):
         task = asyncio.create_task(coroutine)
@@ -533,6 +571,22 @@ class ConnectionManager:
                             'type': 'pong',
                             'data': {'server_time': time.time()}
                         })
+                    elif message_data['type'] == 'shoot':
+                        bullet_id = f"bullet_{client.player_id}_{time.time()}"
+                        self.game_state.add_bullet(
+                            bullet_id,
+                            message_data['data']['position'],
+                            message_data['data']['direction'],
+                            client.player_id
+                        )
+                    elif message_data['type'] == 'hit':
+                        await self.broadcast({
+                            'type': 'hit',
+                            'data': {
+                                'target_id': message_data['data']['target_id'],
+                                'target_type': message_data['data']['target_type']
+                            }
+                        })
 
                 except asyncio.TimeoutError:
                     continue
@@ -561,20 +615,35 @@ class ConnectionManager:
                 await asyncio.sleep(1)
 
     async def update_npcs_task(self):
-        """Task to update NPCs and broadcast their positions"""
         while True:
             try:
                 self.game_state.update_npcs()
-                
-                if self.connections:  # Only broadcast if there are connected clients
+                if self.connections:
                     await self.broadcast({
                         'type': 'npcs_update',
                         'data': {'npcs': self.game_state.get_npcs_data()}
                     })
-                
-                await asyncio.sleep(0.3)  # Update NPC positions a few times per second
+                await asyncio.sleep(0.3)
             except Exception as e:
                 print(f"Error in update_npcs_task: {e}")
+                await asyncio.sleep(1)
+
+    async def update_bullets_task(self):
+        while True:
+            try:
+                delta_time = 0.1
+                hit = self.game_state.update_bullets(delta_time)
+                if hit:
+                    await self.broadcast({
+                        'type': 'hit',
+                        'data': {
+                            'target_id': hit['id'],
+                            'target_type': hit['type']
+                        }
+                    })
+                await asyncio.sleep(delta_time)
+            except Exception as e:
+                print(f"Error in update_bullets_task: {e}")
                 await asyncio.sleep(1)
 
     async def cleanup_inactive_players_task(self):
@@ -612,8 +681,7 @@ class ConnectionManager:
                 print(f"Error in keepalive_task: {e}")
                 await asyncio.sleep(15)
 
-# Initialize manager with NPC count parameter
-manager = ConnectionManager(num_npcs=15)  # Default to 15 NPCs
+manager = ConnectionManager(num_npcs=15)
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
@@ -625,11 +693,9 @@ async def get_server_stats():
 
 @app.get("/set-npcs/{count}")
 async def set_npcs_count(count: int):
-    """Endpoint to change the number of NPCs"""
-    if count < 0 or count > 100:  # Set a reasonable limit
+    if count < 0 or count > 100:
         return {"error": "NPC count must be between 0 and 100"}
     
-    # Clear existing NPCs and create new ones
     manager.game_state.npcs.clear()
     manager.game_state.init_npcs(count)
     
