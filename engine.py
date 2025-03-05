@@ -1,7 +1,7 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 import json
-from typing import Dict, Set, Optional
+from typing import Dict, Set, Optional, List
 import asyncio
 import random
 import math
@@ -164,10 +164,73 @@ class ChunkGenerator:
             "cache_size": len(self.chunks)
         }
 
+class NPC:
+    """Represents a giant NPC that moves across the space"""
+    FIRST_NAMES = ["zappa", "funk", "jive", "rock", "jazz", "punk", "lock", "flare", "nova", "pulse"]
+    SECOND_NAMES = ["narcisus", "jupiter", "saturn", "mars", "venus", "apollo", "zeus", "athena", "hermes", "artemis"]
+    
+    def __init__(self, npc_id: str):
+        self.id = npc_id
+        self.name = self.generate_name()
+        self.position = {
+            'x': random.uniform(-100, 100),
+            'y': random.uniform(8, 10),  # Elevated position
+            'z': random.uniform(-100, 100)
+        }
+        self.rotation = random.uniform(0, 2 * math.pi)
+        self.size = random.uniform(3, 5)  # Giant size (3x to 5x normal)
+        self.speed = random.uniform(0.02, 0.1)  # Units per update
+        self.direction = {
+            'x': math.cos(self.rotation) * self.speed,
+            'z': math.sin(self.rotation) * self.speed
+        }
+        
+    def generate_name(self) -> str:
+        """Generate a random name for the NPC"""
+        first = random.choice(self.FIRST_NAMES)
+        second = random.choice(self.SECOND_NAMES)
+        number = random.randint(1, 99)
+        return f"{first}_{second}_{number}"
+    
+    def update_position(self):
+        """Update the NPC's position based on its direction and speed"""
+        self.position['x'] += self.direction['x']
+        self.position['z'] += self.direction['z']
+        
+        # Check if we need to change direction (random chance or world boundary)
+        if random.random() < 0.005 or abs(self.position['x']) > 500 or abs(self.position['z']) > 500:
+            # Change direction
+            new_rotation = random.uniform(0, 2 * math.pi)
+            self.rotation = new_rotation
+            self.direction = {
+                'x': math.cos(self.rotation) * self.speed,
+                'z': math.sin(self.rotation) * self.speed
+            }
+            
+            # If out of bounds, move back toward center
+            if abs(self.position['x']) > 500 or abs(self.position['z']) > 500:
+                angle_to_center = math.atan2(-self.position['z'], -self.position['x'])
+                self.rotation = angle_to_center
+                self.direction = {
+                    'x': math.cos(self.rotation) * self.speed,
+                    'z': math.sin(self.rotation) * self.speed
+                }
+    
+    def get_data(self) -> Dict:
+        """Get the NPC data to send to clients"""
+        return {
+            'id': self.id,
+            'name': self.name,
+            'position': self.position,
+            'rotation': self.rotation,
+            'size': self.size
+        }
+
 class GameState:
     """Manages the game state with players and landscape"""
-    def __init__(self):
+    def __init__(self, num_npcs: int = 10):
         self.players: Dict[str, Dict] = {}
+        self.npcs: Dict[str, NPC] = {}
         self.chunk_generator = ChunkGenerator()
         self.VIEW_DISTANCE = 3
         self.time_of_day = 0
@@ -177,6 +240,24 @@ class GameState:
         self.connections_active = 0
         self.messages_received = 0
         self.messages_sent = 0
+        
+        # Initialize NPCs
+        self.init_npcs(num_npcs)
+        
+    def init_npcs(self, num_npcs: int):
+        """Initialize NPCs in the game world"""
+        for i in range(num_npcs):
+            npc_id = f"npc_{i}"
+            self.npcs[npc_id] = NPC(npc_id)
+            
+    def update_npcs(self):
+        """Update all NPCs' positions"""
+        for npc in self.npcs.values():
+            npc.update_position()
+            
+    def get_npcs_data(self) -> Dict[str, Dict]:
+        """Get data for all NPCs to send to clients"""
+        return {npc_id: npc.get_data() for npc_id, npc in self.npcs.items()}
 
     def add_player(self, player_id: str, name: str = "Unnamed", position: Dict = None):
         if position is None:
@@ -236,7 +317,8 @@ class GameState:
             "messages_received": self.messages_received,
             "messages_sent": self.messages_sent,
             "chunks": self.chunk_generator.get_stats(),
-            "time_of_day": self.time_of_day
+            "time_of_day": self.time_of_day,
+            "npcs_count": len(self.npcs)
         }
 
 class ClientConnection:
@@ -299,13 +381,14 @@ class ClientConnection:
 
 class ConnectionManager:
     """Manages client connections and game state"""
-    def __init__(self):
+    def __init__(self, num_npcs: int = 10):
         self.connections: Dict[str, ClientConnection] = {}
-        self.game_state = GameState()
+        self.game_state = GameState(num_npcs=num_npcs)
         self.background_tasks = set()
         self.start_background_task(self.update_time_task())
         self.start_background_task(self.cleanup_inactive_players_task())
         self.start_background_task(self.keepalive_task())
+        self.start_background_task(self.update_npcs_task())
 
     def start_background_task(self, coroutine):
         task = asyncio.create_task(coroutine)
@@ -338,6 +421,7 @@ class ConnectionManager:
                 'player_id': client.player_id,
                 'chunks': chunks,
                 'players': players_data,
+                'npcs': self.game_state.get_npcs_data(),
                 'time_of_day': self.game_state.time_of_day
             }
         })
@@ -476,6 +560,23 @@ class ConnectionManager:
                 print(f"Error in update_time_task: {e}")
                 await asyncio.sleep(1)
 
+    async def update_npcs_task(self):
+        """Task to update NPCs and broadcast their positions"""
+        while True:
+            try:
+                self.game_state.update_npcs()
+                
+                if self.connections:  # Only broadcast if there are connected clients
+                    await self.broadcast({
+                        'type': 'npcs_update',
+                        'data': {'npcs': self.game_state.get_npcs_data()}
+                    })
+                
+                await asyncio.sleep(0.3)  # Update NPC positions a few times per second
+            except Exception as e:
+                print(f"Error in update_npcs_task: {e}")
+                await asyncio.sleep(1)
+
     async def cleanup_inactive_players_task(self):
         while True:
             try:
@@ -511,7 +612,8 @@ class ConnectionManager:
                 print(f"Error in keepalive_task: {e}")
                 await asyncio.sleep(15)
 
-manager = ConnectionManager()
+# Initialize manager with NPC count parameter
+manager = ConnectionManager(num_npcs=15)  # Default to 15 NPCs
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
@@ -520,6 +622,18 @@ async def websocket_endpoint(websocket: WebSocket):
 @app.get("/server-stats")
 async def get_server_stats():
     return manager.game_state.get_stats()
+
+@app.get("/set-npcs/{count}")
+async def set_npcs_count(count: int):
+    """Endpoint to change the number of NPCs"""
+    if count < 0 or count > 100:  # Set a reasonable limit
+        return {"error": "NPC count must be between 0 and 100"}
+    
+    # Clear existing NPCs and create new ones
+    manager.game_state.npcs.clear()
+    manager.game_state.init_npcs(count)
+    
+    return {"message": f"NPC count set to {count}", "npcs": len(manager.game_state.npcs)}
 
 if __name__ == "__main__":
     import uvicorn
