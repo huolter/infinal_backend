@@ -22,7 +22,6 @@ app.add_middleware(
 )
 
 class LRUCache(OrderedDict):
-    """Simple LRU cache implementation"""
     def __init__(self, maxsize=1000):
         self.maxsize = maxsize
         super().__init__()
@@ -41,7 +40,6 @@ class LRUCache(OrderedDict):
             del self[oldest]
 
 class ChunkGenerator:
-    """Generates and manages terrain chunks"""
     def __init__(self):
         self.chunks = LRUCache(maxsize=2000)
         self.DENSITY = 0.3
@@ -165,7 +163,6 @@ class ChunkGenerator:
         }
 
 class NPC:
-    """Represents a giant NPC that moves across the space"""
     FIRST_NAMES = ["zappa", "damePapusa", "jive", "rock", "jazz", "punk", "JUanDomingo", "flare", "nova", "pulse"]
     SECOND_NAMES = ["narcisus", "jupiter", "TRUMP", "mars", "venus", "apollo", "Peron", "athena", "hermes", "artemis"]
     
@@ -179,6 +176,7 @@ class NPC:
         }
         self.rotation = random.uniform(0, 2 * math.pi)
         self.size = random.uniform(1, 25)
+        self.scale_factor = 1.0  # Track current scale relative to original size
         self.speed = random.uniform(0.02, 0.1)
         self.direction = {
             'x': math.cos(self.rotation) * self.speed,
@@ -210,8 +208,7 @@ class NPC:
                 }
     
     def hit(self):
-        """Handle NPC being hit"""
-        pass  # Could add health or other effects here if desired
+        self.scale_factor = max(self.scale_factor * 0.9, 0.1)  # Shrink by 10%, min 0.1
 
     def get_data(self) -> Dict:
         return {
@@ -219,15 +216,14 @@ class NPC:
             'name': self.name,
             'position': self.position,
             'rotation': self.rotation,
-            'size': self.size
+            'size': self.size * self.scale_factor  # Adjusted size based on scale factor
         }
 
 class GameState:
-    """Manages the game state with players and landscape"""
     def __init__(self, num_npcs: int = 20):
         self.players: Dict[str, Dict] = {}
         self.npcs: Dict[str, NPC] = {}
-        self.bullets = {}  # Track bullets server-side
+        self.bullets = {}
         self.chunk_generator = ChunkGenerator()
         self.VIEW_DISTANCE = 3
         self.time_of_day = 0
@@ -260,7 +256,8 @@ class GameState:
             'rotation': 0,
             'active_chunks': set(),
             'name': name,
-            'joined_at': time.time()
+            'joined_at': time.time(),
+            'scale_factor': 1.0  # Track player scale
         }
         self.last_activity[player_id] = time.time()
         self.connections_total += 1
@@ -284,7 +281,7 @@ class GameState:
             'position': position,
             'direction': direction,
             'shooter_id': shooter_id,
-            'lifetime': 3.0  # 3 seconds
+            'lifetime': 3.0
         }
 
     def update_bullets(self, delta_time: float):
@@ -303,6 +300,7 @@ class GameState:
                     )
                     if dist < 1:
                         expired.append(bullet_id)
+                        player['scale_factor'] = max(player['scale_factor'] * 0.9, 0.1)
                         return {'type': 'player', 'id': pid}
 
             for nid, npc in self.npcs.items():
@@ -310,7 +308,7 @@ class GameState:
                     (npc.position['x'] - bullet['position']['x'])**2 +
                     (npc.position['z'] - bullet['position']['z'])**2
                 )
-                if dist < npc.size:
+                if dist < npc.size * npc.scale_factor:
                     expired.append(bullet_id)
                     npc.hit()
                     return {'type': 'npc', 'id': nid}
@@ -359,7 +357,6 @@ class GameState:
         }
 
 class ClientConnection:
-    """Manages a single client connection"""
     def __init__(self, websocket: WebSocket, manager):
         self.websocket = websocket
         self.manager = manager
@@ -417,7 +414,6 @@ class ClientConnection:
         return True
 
 class ConnectionManager:
-    """Manages client connections and game state"""
     def __init__(self, num_npcs: int = 10):
         self.connections: Dict[str, ClientConnection] = {}
         self.game_state = GameState(num_npcs=num_npcs)
