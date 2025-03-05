@@ -130,7 +130,7 @@ class GameState:
     def __init__(self):
         self.players: Dict[str, Dict] = {}
         self.chunk_generator = ChunkGenerator()
-        self.VIEW_DISTANCE = 2
+        self.VIEW_DISTANCE = 2  # Increase if needed, e.g., 3 or 4 for more visible chunks
         self.time_of_day = 0
         self.DAY_NIGHT_CYCLE = 60
 
@@ -167,7 +167,9 @@ class GameState:
                 cz = chunk_z + dz
                 chunk_key = f"{cx},{cz}"
                 new_active_chunks.add(chunk_key)
-                chunks[chunk_key] = self.chunk_generator.generate_chunk(cx, cz)
+                if chunk_key not in chunks:  # Avoid redundant generation
+                    chunks[chunk_key] = self.chunk_generator.generate_chunk(cx, cz)
+                    print(f"Generated chunk: {chunk_key}")
         self.players[player_id]['active_chunks'] = new_active_chunks
         return chunks
 
